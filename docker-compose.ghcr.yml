@@ -1,0 +1,58 @@
+# 1Panel / 纯镜像部署专用 compose —— 直接拉取 GitHub Actions 推送到 GHCR 的预构建镜像
+# 用法：
+#   1. 在 1Panel 创建“编排应用”，粘贴本文件
+#   2. 在“环境变量”中设置 IMAGE_TAG（建议填具体版本号，如 1.0.0；不填默认 latest）
+#   3. 若 GHCR 镜像包为私有，需先让服务器 Docker 登录 ghcr.io（见下方说明）
+#
+# 说明：
+#   - 不含 build 段，1Panel 不会尝试本地编译，只拉取镜像
+#   - 数据库表结构 / hypertable / 压缩策略由后端 EnsureSchema 在启动时自动创建，
+#     因此无需挂载 timescaledb/init.sql
+#   - 数据持久化在 ./timescaledb/data（1Panel 应用目录下），删除该目录会清空数据
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: mc-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mc_activity_pass}
+      POSTGRES_DB: mc_activity
+    volumes:
+      - ./timescaledb/data:/var/lib/postgresql/data
+    mem_limit: 2g
+    networks:
+      - mc-net
+
+  backend:
+    # 镜像名固定为小写：ghcr.io/tonyv2intl/mc-activity-replay-backend
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/tonyv2intl/mc-activity-replay}-backend:${IMAGE_TAG:-latest}
+    container_name: mc-backend
+    restart: unless-stopped
+    depends_on:
+      - timescaledb
+    environment:
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: mc_activity
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-mc_activity_pass}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-admin}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+    networks:
+      - mc-net
+
+  frontend:
+    image: ${GHCR_IMAGE_PREFIX:-ghcr.io/tonyv2intl/mc-activity-replay}-frontend:${IMAGE_TAG:-latest}
+    container_name: mc-frontend
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - mc-net
+
+networks:
+  mc-net:
+    driver: bridge

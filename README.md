@@ -44,18 +44,27 @@ docker compose up -d --build
 
 ### 从 GHCR 预构建镜像部署（无需本地编译）
 
-如果已通过 GitHub Actions 构建并推送镜像（见下文「CI/CD」），部署时无需 Docker 构建环境：
+如果已通过 GitHub Actions 构建并推送镜像（见下文「CI/CD」），部署时无需 Docker 构建环境。仓库内含两份 compose：
+
+- `docker-compose.yml`：本地构建用（含 `build:` 段）
+- **`docker-compose.ghcr.yml`**：纯镜像部署用（无 `build:` 段，直接拉取 GHCR 镜像，**适用于 1Panel / 远程服务器**）
+
+**通用（命令行）部署：**
 
 ```bash
 cp .env.example .env
 # 编辑 .env，取消注释并修改为你的 GHCR 镜像地址（版本号与 Actions 输入一致）：
 #   BACKEND_IMAGE=ghcr.io/<你的GitHub名>/<仓库名>-backend:1.0.0
 #   FRONTEND_IMAGE=ghcr.io/<你的GitHub名>/<仓库名>-frontend:1.0.0
-docker compose pull
-docker compose up -d
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-> GHCR 私有仓库需先登录：`docker login ghcr.io -u <用户名>`（密码使用 GitHub Personal Access Token，勾选 `read:packages`）。
+**1Panel 部署：** 在「容器 → 编排应用」中新建应用，粘贴 `docker-compose.ghcr.yml` 内容，在“环境变量”里设置 `IMAGE_TAG`（建议填具体版本号，如 `1.0.0`，不填则默认 `latest`），确认创建即可。无需挂载 `init.sql`，表结构由后端启动时自动创建。
+
+> ⚠️ **GHCR 镜像包默认是私有的**（即使代码仓库设为 Public 也不影响包可见性）。二选一：
+> 1. 把包改为公开：GitHub 仓库 → 右侧 `Packages` → `mc-activity-replay-backend` → Package settings → Change visibility → Public（frontend 同样操作），之后拉取免登录；
+> 2. 或在部署服务器上先登录：`docker login ghcr.io -u <用户名>`（密码用带 `read:packages` 权限的 PAT），1Panel 也可在「容器配置」中填写 ghcr.io 的仓库账号密码。
 
 ### 停止
 
@@ -93,7 +102,8 @@ docker compose down
 
 ```
 mc-activity-replay/
-├── docker-compose.yml      # 一键部署编排
+├── docker-compose.yml      # 一键部署编排（本地构建）
+├── docker-compose.ghcr.yml # 纯镜像部署编排（拉取 GHCR，适用于 1Panel / 远程）
 ├── start.sh / start.bat    # 启动脚本
 ├── .env.example            # 环境变量模板
 ├── .github/
