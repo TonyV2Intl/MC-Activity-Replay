@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: mc-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mc_activity_pass}
+      POSTGRES_DB: mc_activity
+    volumes:
+      - ./timescaledb/data:/var/lib/postgresql/data
+      - ./timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    mem_limit: 2g
+    networks:
+      - mc-net
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
+    # 同时声明 image：本地构建时标签为默认值；部署 GHCR 预构建镜像时
+    # 在 .env 中设置 BACKEND_IMAGE=ghcr.io/<owner>/<repo>-backend:<版本>
+    image: ${BACKEND_IMAGE:-mc-activity-replay-backend}
+    container_name: mc-backend
+    restart: unless-stopped
+    depends_on:
+      - timescaledb
+    environment:
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_NAME: mc_activity
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-mc_activity_pass}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-admin}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+    networks:
+      - mc-net
+
+  frontend:
+    build: ./frontend
+    image: ${FRONTEND_IMAGE:-mc-activity-replay-frontend}
+    container_name: mc-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    networks:
+      - mc-net
+
+networks:
+  mc-net:
+    driver: bridge

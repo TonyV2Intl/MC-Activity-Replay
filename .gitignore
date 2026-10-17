@@ -1,0 +1,7 @@
+# 数据与本地环境文件
+timescaledb/data/
+.env
+
+# 编译产物
+backend/backend
+backend/mc-activity-replay

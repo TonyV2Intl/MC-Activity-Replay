@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>回放 — Minecraft 活动记录与回放系统</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="replay-layout">
+    <!-- 控制面板 -->
+    <div class="control-panel" id="control-panel">
+      <button class="small back-btn" onclick="location.href='/index.html'">← 返回控制台</button>
+
+      <div class="section">
+        <h3>玩家选择（勾选加载轨迹）</h3>
+        <div class="player-list" id="player-list">
+          <span class="hint">加载中…</span>
+        </div>
+        <div class="hint" id="player-load-status"></div>
+      </div>
+
+      <div class="section playback-controls">
+        <h3>播放控制</h3>
+        <div class="row">
+          <button class="primary" id="btn-play" onclick="replayPage.togglePlay()" style="min-width: 76px;">▶ 播放</button>
+          <button onclick="replayPage.stepPrev()" title="上一个点">⏮ 上一点</button>
+          <button onclick="replayPage.stepNext()" title="下一个点">下一点 ⏭</button>
+        </div>
+        <div class="row">
+          <input type="range" id="progress-bar" min="0" max="100" value="0" step="1">
+        </div>
+        <div class="row">
+          <label>速度</label>
+          <select id="speed-select" onchange="replayPage.setSpeed(this.value)">
+            <option value="1">1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+            <option value="8">8x</option>
+            <option value="16">16x</option>
+            <option value="32">32x</option>
+          </select>
+        </div>
+        <div class="time-display">
+          <span id="time-current">--:--:--</span>
+          <span id="time-total">--:--:--</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>录制</h3>
+        <button id="btn-record-mode" onclick="replayPage.toggleRecordingMode()">进入录制模式</button>
+        <button id="btn-record" class="danger" onclick="replayPage.toggleRecord()" style="display: none;">开始录制</button>
+        <div class="hint" style="margin-top: 6px;">
+          录制模式下仅显示地图与时间戳；开始录制后请在浏览器弹窗中选择"当前标签页"
+        </div>
+      </div>
+    </div>
+
+    <!-- 地图 -->
+    <div id="map"></div>
+  </div>
+
+  <!-- 右上角时间戳（录制模式下保留） -->
+  <div class="replay-timestamp" id="replay-timestamp">---------- --:--:--</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-polylinedecorator@1.6.0/dist/leaflet.polylineDecorator.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-rotatedmarker@0.2.0/leaflet.rotatedMarker.js"></script>
+  <!-- leaflet-trackplayer 本地托管：jsdelivr 对 .cjs 文件返回 application/node MIME 类型，
+       Chrome 严格 MIME 检查会拒绝执行（L.TrackPlayer is not a constructor），
+       unpkg 虽返回 text/javascript 但国内可达性不稳定，故随前端静态文件一起分发 -->
+  <script src="/js/leaflet-trackplayer.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/auth.js"></script>
+  <script src="/js/tile.js"></script>
+  <script src="/js/recorder.js"></script>
+  <script src="/js/replay.js"></script>
+  <script>
+    (async () => {
+      if (await guardAuth()) {
+        replayPage.init();
+      }
+    })();
+  </script>
+</body>
+</html>

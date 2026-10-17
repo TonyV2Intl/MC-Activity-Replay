@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 — Minecraft 活动记录与回放系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <h1>Minecraft 活动记录与回放系统</h1>
+      <div class="sub">请输入管理员密码登录</div>
+      <div class="form-row">
+        <input type="password" id="password" placeholder="密码" autocomplete="current-password">
+      </div>
+      <div class="error-text" id="login-error"></div>
+      <div class="form-row" style="margin-top: 12px;">
+        <button class="primary" id="login-btn" style="width: 100%;" onclick="doLogin()">登 录</button>
+      </div>
+      <div class="hint" style="margin-top: 14px; text-align: center;">
+        初始密码为 admin，首次登录后请立即在控制台修改
+      </div>
+    </div>
+  </div>
+  <script src="/js/api.js"></script>
+  <script src="/js/auth.js"></script>
+  <script>
+    document.getElementById('password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+    // 已登录用户访问登录页时直接进入控制台
+    api('/auth/check').then(() => { location.href = '/index.html'; }).catch(() => {});
+  </script>
+</body>
+</html>

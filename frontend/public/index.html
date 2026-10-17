@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>控制台 — Minecraft 活动记录与回放系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <span class="title">Minecraft 活动记录与回放系统</span>
+    <span class="badge idle" id="collector-badge">IDLE</span>
+    <span class="spacer"></span>
+    <span class="hint" id="session-timer"></span>
+    <button class="small" onclick="doLogout()">退出登录</button>
+  </div>
+
+  <div class="container">
+
+    <!-- 1. 记录控制区 -->
+    <div class="panel">
+      <h2>记录控制</h2>
+      <div class="form-row inline">
+        <button class="primary" id="btn-start" onclick="consolePage.startRecording()">开始记录</button>
+        <button class="danger" id="btn-stop" onclick="consolePage.stopRecording()" disabled>停止记录</button>
+        <span class="hint" id="recording-hint">同一时间只允许一个记录会话</span>
+      </div>
+      <div class="form-row inline">
+        <label>记录时长上限（秒，留空 = 无上限）</label>
+        <input type="number" id="input-max-duration" min="1" placeholder="例如 21600（6 小时）">
+        <label>轮询间隔（毫秒）</label>
+        <input type="number" id="input-poll-interval" min="50" step="100" value="1000">
+      </div>
+      <div class="form-row inline">
+        <label>玩家筛选</label>
+        <select id="select-filter-mode" style="max-width: 140px;">
+          <option value="all">全部玩家</option>
+          <option value="include">仅包含（UUID 或名称）</option>
+          <option value="exclude">排除（UUID 或名称）</option>
+        </select>
+      </div>
+      <div class="form-row" id="filter-inputs" style="display: none;">
+        <textarea id="input-filter" placeholder="每行一个 UUID 或玩家名称（包含匹配）"></textarea>
+      </div>
+      <div class="error-text" id="recording-error"></div>
+    </div>
+
+    <!-- 2. 实时监控区 -->
+    <div class="panel">
+      <h2>实时监控（每 2 秒刷新）</h2>
+      <div class="live-grid" id="live-players">
+        <span class="hint">未在记录中</span>
+      </div>
+    </div>
+
+    <!-- 3. 会话管理区 -->
+    <div class="panel">
+      <h2>会话管理</h2>
+      <div style="overflow-x: auto;">
+        <table class="data" id="sessions-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="check-all" title="全选"></th>
+              <th>ID</th>
+              <th>名称</th>
+              <th>开始时间</th>
+              <th>结束时间</th>
+              <th>时长</th>
+              <th>玩家数</th>
+              <th>数据点</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="sessions-tbody">
+            <tr><td colspan="9" class="hint">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="form-row" style="margin-top: 12px;">
+        <button class="small" id="btn-merge" onclick="sessionPage.mergeSelected()" disabled>合并选中会话</button>
+        <button class="small" onclick="sessionPage.refresh()">刷新列表</button>
+        <span class="hint">点击行进入回放页面；合并要求各会话时间段不重叠</span>
+      </div>
+      <div class="error-text" id="session-error"></div>
+    </div>
+
+    <!-- 4. 配置区 -->
+    <div class="panel">
+      <h2>配置</h2>
+      <div class="form-row">
+        <label>MTR API URL</label>
+        <input type="text" id="cfg-mtr-url">
+      </div>
+      <div class="form-row">
+        <label>Squaremap API URL</label>
+        <input type="text" id="cfg-squaremap-url">
+      </div>
+      <div class="form-row">
+        <label>瓦片 URL 模板</label>
+        <input type="text" id="cfg-tile-template">
+      </div>
+      <div class="form-row">
+        <label>默认世界名</label>
+        <input type="text" id="cfg-world">
+        <label style="min-width: auto;">默认瓦片缩放</label>
+        <input type="number" id="cfg-tile-zoom" min="0" max="10" style="max-width: 100px;">
+      </div>
+      <div class="form-row">
+        <button class="primary" onclick="consolePage.saveConfig()">保存配置</button>
+        <span class="ok-text" id="config-ok"></span>
+        <span class="error-text" id="config-error"></span>
+      </div>
+    </div>
+
+    <!-- 5. 修改密码 -->
+    <div class="panel">
+      <h2>修改密码</h2>
+      <div class="form-row inline">
+        <label>旧密码</label>
+        <input type="password" id="pwd-old" style="max-width: 200px;">
+        <label>新密码</label>
+        <input type="password" id="pwd-new" style="max-width: 200px;">
+        <button onclick="consolePage.changePassword()">修改密码</button>
+        <span class="ok-text" id="pwd-ok"></span>
+        <span class="error-text" id="pwd-error"></span>
+      </div>
+    </div>
+
+    <!-- 6. 数据库导入导出 -->
+    <div class="panel">
+      <h2>数据库导入导出</h2>
+      <div class="form-row">
+        <button onclick="consolePage.exportDatabase()">导出整个数据库（SQL）</button>
+        <input type="file" id="db-import-file" accept=".sql,.txt" style="max-width: 320px;">
+        <button class="danger" onclick="consolePage.importDatabase()">导入数据库</button>
+        <span class="hint">导出为全库数据快照；导入将清空当前数据并从快照重建，请谨慎操作</span>
+      </div>
+      <div class="error-text" id="db-error"></div>
+    </div>
+
+    <!-- 7. 日志/错误区 -->
+    <div class="panel">
+      <h2>日志 / 错误（最近 100 条）</h2>
+      <div class="error-log" id="error-log"><span class="empty">暂无错误</span></div>
+    </div>
+
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/auth.js"></script>
+  <script src="/js/console.js"></script>
+  <script src="/js/session.js"></script>
+  <script>
+    (async () => {
+      if (await guardAuth()) {
+        consolePage.init();
+        sessionPage.init();
+      }
+    })();
+  </script>
+</body>
+</html>
