@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -283,5 +282,3 @@ func liveCollector(coll *collector.Collector) gin.HandlerFunc {
 		c.JSON(http.StatusOK, coll.Live())
 	}
 }
-
-var _ = time.Now

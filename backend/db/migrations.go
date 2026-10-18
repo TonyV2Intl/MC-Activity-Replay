@@ -78,6 +78,14 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		}
 	}
 
+	// 旧版本数据库可能残留已废弃的配置键：世界名与瓦片 URL 模板已固定为系统默认值
+	// （collector.Start 硬编码），不再提供配置项，幂等清理
+	for _, key := range []string{"default_world", "tile_url_template"} {
+		if _, err := pool.Exec(ctx, `DELETE FROM app_config WHERE key = $1`, key); err != nil {
+			return fmt.Errorf("清理废弃配置键 %s 失败: %w", key, err)
+		}
+	}
+
 	// hypertable 创建（仅当尚未是 hypertable 时）
 	if err := ensureHypertable(ctx, pool, "player_activity", "1 day"); err != nil {
 		return err
@@ -105,13 +113,13 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		}
 	}
 
-	// 默认配置种子
+	// 默认配置种子。
+	// 注意：世界名与瓦片 URL 模板固定为系统默认值（collector.Start 硬编码），
+	// 不再提供配置项，故不在此列出（default_world / tile_url_template）。
 	defaults := [][2]string{
 		{"mtr_url", "https://letsplay.minecrafttransitrailway.com/system-map/mtr/api/map/clients?dimension=0"},
 		{"squaremap_url", "https://letsplay.minecrafttransitrailway.com/world-map"},
 		{"mirror_url", ""},
-		{"tile_url_template", "/tiles/{world}/{zoom}/{x}_{z}.png"},
-		{"default_world", "minecraft_overworld"},
 		{"default_tile_zoom", "3"},
 		{"default_poll_interval_ms", "1000"},
 		{"default_max_duration_sec", ""},

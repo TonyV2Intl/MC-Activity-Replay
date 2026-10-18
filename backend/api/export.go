@@ -383,7 +383,7 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 			}
 		}
 		var station, route string
-		if hasTransit {
+		if hasTransit && len(rec) >= 8 {
 			station = strings.TrimSpace(rec[6])
 			route = strings.TrimSpace(rec[7])
 		}
@@ -637,7 +637,6 @@ END $$;
 	}
 }
 
-// importDatabase 使用 psql 导入数据库
 // importDatabase 整库恢复：删除并重建数据库，由 EnsureSchema 重建结构后执行数据快照。
 // 语义为"恢复"而非"在现有库上执行"——先重置为空库并重建 hypertable 结构，再导入数据：
 //  1. 避免 TimescaleDB 对 "ALTER TABLE ONLY" 的限制影响；
@@ -648,7 +647,8 @@ END $$;
 func importDatabase(database *db.DB, cfg *config.Config, coll *collector.Collector) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 记录中的采集器持有数据库写入，恢复期间必须停止
-		if coll != nil && coll.Status().Status == "recording" {
+		// （用 Recording 而非 Status：Stop 过渡期间协程仍可能持有最后的 flush）
+		if coll != nil && coll.Recording() {
 			badRequest(c, "请先停止记录再进行数据库导入")
 			return
 		}

@@ -139,17 +139,6 @@ type StartCollectorRequest struct {
 
 // ---------- 请求体 ----------
 
-// LoginRequest 登录请求
-type LoginRequest struct {
-	Password string `json:"password" binding:"required"`
-}
-
-// PasswordChangeRequest 修改密码请求
-type PasswordChangeRequest struct {
-	Old string `json:"old" binding:"required"`
-	New string `json:"new" binding:"required"`
-}
-
 // RenameSessionRequest 重命名请求
 type RenameSessionRequest struct {
 	Name string `json:"name" binding:"required"`

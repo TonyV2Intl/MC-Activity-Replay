@@ -15,7 +15,9 @@ import (
 func wipeDatabase(database *db.DB, cfg *config.Config, coll *collector.Collector) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 记录中的采集器持有数据库写入，清空期间必须停止
-		if coll != nil && coll.Status().Status == "recording" {
+		// （用 Recording 而非 Status：Stop 等待轮询协程退出期间 Status 表现为
+		// idle，但协程仍可能持有最后的 flush 写入）
+		if coll != nil && coll.Recording() {
 			badRequest(c, "请先停止记录再清空数据库")
 			return
 		}

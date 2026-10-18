@@ -286,8 +286,10 @@ func (c *Collector) flush(ctx context.Context, sessionID int64) error {
 				return []any{r.Time, sessionID, r.UUID, r.Name, r.X, r.Z, r.Yaw}, nil
 			}))
 		if err != nil {
-			// 写回缓冲以便重试
+			// 位置数据未写入：写回两个缓冲以便重试（transit 尚未尝试，
+			// 若丢弃则对应状态变化已从 lastTransit 消费，永远不会被补写）
 			c.writeBuf = append(rows, c.writeBuf...)
+			c.transitBuf = append(transit, c.transitBuf...)
 			return fmt.Errorf("写入 player_activity 失败: %w", err)
 		}
 	}

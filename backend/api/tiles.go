@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"regexp"
@@ -107,8 +108,8 @@ func tileProxy(database *db.DB) gin.HandlerFunc {
 			c.Status(http.StatusBadGateway) // 上游不可达：Leaflet 按缺失瓦片处理
 			return
 		}
+		defer resp.Body.Close()
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCachedTileBytes+1))
-		resp.Body.Close()
 		if readErr != nil {
 			c.Status(http.StatusBadGateway)
 			return
@@ -118,12 +119,21 @@ func tileProxy(database *db.DB) gin.HandlerFunc {
 			c.Status(resp.StatusCode)
 			return
 		}
-		if len(body) > maxCachedTileBytes {
-			body = body[:maxCachedTileBytes]
-		}
 		ct := resp.Header.Get("Content-Type")
 		if ct == "" || !strings.HasPrefix(ct, "image/") {
 			ct = "image/png"
+		}
+		if len(body) > maxCachedTileBytes {
+			// 超过单块缓存上限（如低缩放等级的大图）：直接流转发剩余部分，
+			// 不缓存。不可截断——损坏的图片数据比缺失瓦片更糟
+			c.Header("Content-Type", ct)
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.Header("X-Tile-Cache", "MISS")
+			c.Status(http.StatusOK)
+			if _, err := io.Copy(c.Writer, io.MultiReader(bytes.NewReader(body), resp.Body)); err != nil {
+				return // 客户端中途断开：无法再改写状态码，仅记录到访问日志
+			}
+			return
 		}
 		e := tileCacheEntry{body: body, contentType: ct}
 		cache.put(cacheKey, e)

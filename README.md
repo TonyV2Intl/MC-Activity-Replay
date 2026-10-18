@@ -87,6 +87,8 @@ docker compose down
 | `mtr_url` / `squaremap_url` | 采集时使用的上游 API 地址（新建会话时写入会话记录，之后按会话固化） |
 | `mirror_url` | **瓦片镜像地址**（默认空）：仅影响回放瓦片——设置后回放从该镜像加载瓦片，采集仍使用 `squaremap_url`，适用于内外网分离、瓦片服务器更换等场景；回放页「瓦片经服务器代理」开启时同样优先走镜像 |
 | `default_tile_zoom` | 瓦片最大缩放等级（zoom.max），新建会话时作为默认值写入 |
+| `default_poll_interval_ms` | 新建会话的默认轮询间隔（毫秒），请求未指定时使用；默认 `1000` |
+| `default_max_duration_sec` | 新建会话的默认时长上限（秒），留空表示无上限，请求未指定时使用 |
 
 ## 系统架构
 

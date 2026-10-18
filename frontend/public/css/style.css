@@ -423,16 +423,3 @@ body.recording-mode .replay-timestamp {
   top: 10px;
   right: 10px;
 }
-
-/* 加载提示 */
-.loading-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(10, 12, 16, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-  color: var(--accent);
-  font-size: 15px;
-}

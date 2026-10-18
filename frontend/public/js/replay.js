@@ -511,7 +511,7 @@ const replayPage = {
     const f = this.tipFields || DEFAULT_TIP_FIELDS;
     let html = '';
     if (f.name) {
-      html += '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
+      html += '<span style="color:' + track.color + '">' + esc(track.name) + '</span>';
     }
     if (f.coords && marker) {
       const b = latLngToBlock(marker.getLatLng());
@@ -529,11 +529,11 @@ const replayPage = {
       if (rec) {
         const r = resolveTransit(rec, this.network);
         if (f.station && r.stationName) {
-          html += '<br><span class="tip-sub">站点: ' + escapeHtml(r.stationName) + '</span>';
+          html += '<br><span class="tip-sub">站点: ' + esc(r.stationName) + '</span>';
         }
         if (f.route && r.routeName) {
-          let line = '线路: ' + escapeHtml(r.routeName);
-          if (r.fromName && r.toName) line += ' ' + escapeHtml(r.fromName) + ' → ' + escapeHtml(r.toName);
+          let line = '线路: ' + esc(r.routeName);
+          if (r.fromName && r.toName) line += ' ' + esc(r.fromName) + ' → ' + esc(r.toName);
           html += '<br><span class="tip-sub">' + line + '</span>';
         }
       }
@@ -1172,13 +1172,6 @@ function normalizeYawAngle(yaw) {
   let a = (180 + Number(yaw)) % 360;
   if (a < 0) a += 360;
   return a;
-}
-
-/** 转义 HTML 特殊字符（tooltip 内容为玩家名，需防止注入） */
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
 }
 
 /** ms epoch → HH:MM:SS */

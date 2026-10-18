@@ -144,7 +144,7 @@ func authCheck(c *gin.Context) {
 }
 
 // changePassword 修改密码
-func changePassword(database *db.DB, cfg *config.Config) gin.HandlerFunc {
+func changePassword(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req struct {
 			Old string `json:"old" binding:"required"`

@@ -40,9 +40,9 @@ type Collector struct {
 	errors       []models.ErrorEntry
 
 	// 最近一次轮询结果（供 /api/collector/live）
-	livePlayers    []models.LivePlayer
-	livePolledAt   *time.Time
-	liveSessionID  int64 // 快照所属会话 ID（Stop 不清除，保证停止后仍可返回有效快照）
+	livePlayers   []models.LivePlayer
+	livePolledAt  *time.Time
+	liveSessionID int64 // 快照所属会话 ID（Stop 不清除，保证停止后仍可返回有效快照）
 
 	// 轮询协程控制通道（仅 Start/Stop 访问）
 	stopCh   chan struct{}
@@ -115,10 +115,15 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 		return nil, errors.New("已有进行中的会话，请先停止当前会话")
 	}
 
-	// 参数默认值处理（未传的字段回退到全局配置默认值）
+	// 参数默认值处理（未传的字段回退到全局配置默认值）。
+	// 世界名与瓦片 URL 模板按设计固定为系统默认值，不提供配置项。
+	cfgMap := db.LoadConfigMap(ctx, c.db.Pool)
+
 	pollInterval := 1000
 	if req.PollIntervalMs != nil {
 		pollInterval = *req.PollIntervalMs
+	} else if n, err := strconv.Atoi(strings.TrimSpace(cfgMap["default_poll_interval_ms"])); err == nil && n > 0 {
+		pollInterval = n
 	}
 	if pollInterval < int(minPollInterval.Milliseconds()) {
 		pollInterval = int(minPollInterval.Milliseconds())
@@ -133,18 +138,21 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	tileZoom := 3
 	if req.TileZoom != nil {
 		tileZoom = *req.TileZoom
-	} else {
-		var cfgVal string
-		if err := c.db.Pool.QueryRow(ctx,
-			`SELECT value FROM app_config WHERE key = 'default_tile_zoom'`).Scan(&cfgVal); err == nil {
-			if n, convErr := strconv.Atoi(strings.TrimSpace(cfgVal)); convErr == nil && n >= 0 {
-				tileZoom = n
-			}
-		}
+	} else if n, err := strconv.Atoi(strings.TrimSpace(cfgMap["default_tile_zoom"])); err == nil && n >= 0 {
+		tileZoom = n
 	}
 	tileURLTemplate := "/tiles/{world}/{zoom}/{x}_{z}.png"
 	if req.TileURLTemplate != nil && *req.TileURLTemplate != "" {
 		tileURLTemplate = *req.TileURLTemplate
+	}
+	// 记录时长上限：请求未指定时回退到 app_config.default_max_duration_sec（空 = 无上限）
+	maxDurationSec := req.MaxDurationSec
+	if maxDurationSec == nil {
+		if v := strings.TrimSpace(cfgMap["default_max_duration_sec"]); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				maxDurationSec = &n
+			}
+		}
 	}
 	mtrURL := c.cfg.MtrURL
 	if req.MtrURL != nil && *req.MtrURL != "" {
@@ -167,7 +175,7 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	sess := &models.Session{
 		Name:            name,
 		StartedAt:       time.Now().UTC(),
-		MaxDurationSec:  req.MaxDurationSec,
+		MaxDurationSec:  maxDurationSec,
 		PollIntervalMs:  pollInterval,
 		MtrURL:          mtrURL,
 		SquaremapURL:    squaremapURL,
@@ -210,8 +218,8 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	c.doneCh = doneCh
 
 	// 倒计时硬上限：到时强制停止，无延长选项
-	if req.MaxDurationSec != nil && *req.MaxDurationSec > 0 {
-		time.AfterFunc(time.Duration(*req.MaxDurationSec)*time.Second, func() {
+	if maxDurationSec != nil && *maxDurationSec > 0 {
+		time.AfterFunc(time.Duration(*maxDurationSec)*time.Second, func() {
 			c.addError("记录时长达到上限，自动停止")
 			if err := c.Stop(context.Background(), "timeout"); err != nil {
 				c.addError("自动停止失败: " + err.Error())
@@ -300,6 +308,16 @@ func (c *Collector) Status() models.CollectorStatus {
 		st.LastError = &e
 	}
 	return st
+}
+
+// Recording 返回采集器是否正在记录（含 Stop 执行中的过渡状态）。
+// 与 Status 不同：不清空/导入等破坏性操作必须用本方法判断——
+// Stop 等待轮询协程退出期间 Status 对外表现为 idle，但协程仍可能持有
+// 数据库写入，此时执行 TRUNCATE/DROP 会与最后的 flush 竞争。
+func (c *Collector) Recording() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.status == StatusRecording
 }
 
 // ClearLive 清空内存中的实时快照（数据库清空后调用，避免监控仍显示旧玩家）

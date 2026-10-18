@@ -53,25 +53,6 @@ function latLngToBlock(latlng) {
   };
 }
 
-/** 方块坐标 → 瓦片索引（与 Java 端 floorDiv(blockX, 512 * 2^(maxZoom - zoom)) 一致） */
-function blockToTile(x, z, zoom) {
-  const step = Math.pow(2, TileConfig.maxZoom - zoom);
-  return {
-    x: Math.floor((x + TileConfig.offsetX) / (TileConfig.tileSize * step)),
-    z: Math.floor((z + TileConfig.offsetZ) / (TileConfig.tileSize * step)),
-  };
-}
-
-/** 瓦片索引 → 该瓦片覆盖的方块范围 */
-function tileToBlockRange(tileX, tileZ, zoom) {
-  const step = Math.pow(2, TileConfig.maxZoom - zoom);
-  const size = TileConfig.tileSize * step;
-  return {
-    minX: tileX * size - TileConfig.offsetX, maxX: (tileX + 1) * size - TileConfig.offsetX,
-    minZ: tileZ * size - TileConfig.offsetZ, maxZ: (tileZ + 1) * size - TileConfig.offsetZ,
-  };
-}
-
 /**
  * 自定义 CRS：显式固定 scale(zoom) = 256 * 2^zoom，
  * 避免 Leaflet 版本差异（如 Leaflet 2.x 的 CRS.Simple 使用 2^zoom）导致瓦片错位。

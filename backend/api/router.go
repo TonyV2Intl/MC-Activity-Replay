@@ -2,10 +2,8 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
-	"time"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"mc-activity-replay/collector"
@@ -30,7 +28,7 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 		{
 			auth.POST("/logout", logout)
 			auth.GET("/auth/check", authCheck)
-			auth.POST("/auth/password", changePassword(database, cfg))
+			auth.POST("/auth/password", changePassword(database))
 
 			auth.GET("/collector/status", func(c *gin.Context) {
 				c.JSON(http.StatusOK, coll.Status())
@@ -55,11 +53,11 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 			auth.GET("/config", getConfig(database))
 			auth.PUT("/config", updateConfig(database))
 
-		// MTR 站点/线路 ID → 名称映射（回放 tooltip 显示站名/线名）
-		auth.GET("/network/names", networkNames(database))
+			// MTR 站点/线路 ID → 名称映射（回放 tooltip 显示站名/线名）
+			auth.GET("/network/names", networkNames(database))
 
-		// 瓦片代理：浏览器经后端中转下载 Squaremap 瓦片（上游取 mirror_url，回退 squaremap_url）
-		auth.GET("/tiles/*rest", tileProxy(database))
+			// 瓦片代理：浏览器经后端中转下载 Squaremap 瓦片（上游取 mirror_url，回退 squaremap_url）
+			auth.GET("/tiles/*rest", tileProxy(database))
 
 			auth.GET("/database/export", exportDatabase(database))
 			auth.POST("/database/import", importDatabase(database, cfg, coll))
@@ -75,8 +73,8 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 
 // parseID 解析路径中的 int64 ID 参数
 func parseID(c *gin.Context, name string) (int64, bool) {
-	var id int64
-	if _, err := fmt.Sscan(c.Param(name), &id); err != nil || id <= 0 {
+	id, err := strconv.ParseInt(c.Param(name), 10, 64)
+	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
 		return 0, false
 	}
@@ -91,10 +89,3 @@ func badRequest(c *gin.Context, msg string) {
 func serverError(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 }
-
-// nowRFC3339 辅助
-func nowRFC3339() string {
-	return time.Now().UTC().Format(time.RFC3339)
-}
-
-var _ = strings.TrimSpace

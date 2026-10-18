@@ -7,13 +7,12 @@ import (
 	"mc-activity-replay/db"
 )
 
-// 已知配置项
+// 已知配置项。
+// 世界名与瓦片 URL 模板固定为系统默认值，不提供配置项（见 collector.Start）。
 var knownConfigKeys = []string{
 	"mtr_url",
 	"squaremap_url",
 	"mirror_url",
-	"tile_url_template",
-	"default_world",
 	"default_tile_zoom",
 	"default_poll_interval_ms",
 	"default_max_duration_sec",
