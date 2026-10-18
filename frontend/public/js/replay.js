@@ -53,6 +53,8 @@ const replayPage = {
 
   pointTimes: [],           // 所有已加载轨迹点的去重时间戳（步进用）
 
+  followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
+
   /* ---------- 初始化 ---------- */
   async init() {
     const params = new URLSearchParams(location.search);
@@ -103,6 +105,11 @@ const replayPage = {
     this.tileLayer = createSquaremapTileLayer(
       s.squaremap_url, s.tile_url_template, s.world, s.tile_zoom || 3, TileConfig.extraZoom || 2);
     this.tileLayer.addTo(this.map);
+
+    // 用户手动拖动地图时自动取消跟随（panTo 不触发 dragstart，不会自我取消）
+    this.map.on('dragstart', () => {
+      if (this.followUuid) this.setFollow(null);
+    });
 
     window.addEventListener('resize', () => this.map && this.map.invalidateSize());
   },
@@ -166,7 +173,19 @@ const replayPage = {
       count.className = 'count';
       count.textContent = fmtNum(p.point_count);
 
-      label.append(cb, img, name, count);
+      const followBtn = document.createElement('button');
+      followBtn.type = 'button';
+      followBtn.className = 'follow-btn';
+      followBtn.dataset.uuid = p.uuid;
+      followBtn.textContent = '跟随';
+      followBtn.title = '画面中心跟随该玩家移动（拖动地图可取消）';
+      followBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleFollow(p.uuid);
+      });
+
+      label.append(cb, img, name, count, followBtn);
       box.appendChild(label);
     }
   },
@@ -190,6 +209,45 @@ const replayPage = {
       }
     } else {
       this.removeTrack(uuid);
+    }
+  },
+
+  /* ---------- 画面跟随 ---------- */
+
+  /**
+   * 切换画面跟随目标。
+   * 再次点击同一玩家 = 取消跟随；点击其他玩家 = 切换跟随目标。
+   * 目标轨迹尚未加载时自动勾选并加载，加载完成后才生效。
+   */
+  async toggleFollow(uuid) {
+    if (this.followUuid === uuid) {
+      this.setFollow(null);
+      return;
+    }
+    if (!this.tracks.has(uuid)) {
+      const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
+      if (cb && !cb.checked) {
+        cb.checked = true;
+        await this.loadTrack(uuid);
+      }
+      if (!this.tracks.has(uuid)) return;      // 加载失败或被用户取消勾选
+      if (this.followUuid) return;             // 加载期间用户已切换到其他玩家
+    }
+    this.setFollow(uuid);
+  },
+
+  /** 设置跟随目标并刷新按钮高亮；非 null 时立即居中一次 */
+  setFollow(uuid) {
+    this.followUuid = uuid;
+    this.updateFollowButtons();
+    if (uuid) this.render();
+  },
+
+  /** 同步所有跟随按钮的高亮状态 */
+  updateFollowButtons() {
+    const btns = document.querySelectorAll('#player-list .follow-btn');
+    for (const btn of btns) {
+      btn.classList.toggle('active', btn.dataset.uuid === this.followUuid);
     }
   },
 
@@ -313,6 +371,8 @@ const replayPage = {
       this.map.removeLayer(track.marker);
     }
     this.tracks.delete(uuid);
+    // 被跟随的玩家轨迹被移除时取消跟随
+    if (this.followUuid === uuid) this.setFollow(null);
     this.recomputeRange();
     this.render();
   },
@@ -458,6 +518,15 @@ const replayPage = {
         if (track.tp.marker) {
           track.tp.marker.setOpacity(out ? 0.25 : 1);
         }
+      }
+    }
+
+    // 画面跟随：把被跟随玩家的标记保持在地图中心
+    if (this.followUuid) {
+      const track = this.tracks.get(this.followUuid);
+      const marker = track ? (track.tp ? track.tp.marker : track.marker) : null;
+      if (marker) {
+        this.map.panTo(marker.getLatLng(), { animate: false });
       }
     }
 

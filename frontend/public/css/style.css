@@ -277,8 +277,27 @@ table.data tr.clickable { cursor: pointer; }
   image-rendering: pixelated;
   background: #000;
 }
-.player-item .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.player-item .count { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.player-item .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.player-item .count { color: var(--text-dim); font-size: 11px; }
+.player-item .follow-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 1px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+.player-item .follow-btn:hover { color: var(--text); border-color: var(--accent); }
+.player-item .follow-btn.active {
+  color: #062f33;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
 
 .playback-controls { display: flex; flex-direction: column; gap: 10px; }
 .playback-controls .row { display: flex; align-items: center; gap: 8px; }
