@@ -302,6 +302,16 @@ func (c *Collector) Status() models.CollectorStatus {
 	return st
 }
 
+// ClearLive 清空内存中的实时快照（数据库清空后调用，避免监控仍显示旧玩家）
+func (c *Collector) ClearLive() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.livePlayers = nil
+	c.livePolledAt = nil
+	c.liveSessionID = 0
+	c.playerCount = 0
+}
+
 // Live 返回最近一次轮询的玩家列表
 func (c *Collector) Live() models.CollectorLive {
 	c.mu.RLock()

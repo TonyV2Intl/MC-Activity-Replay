@@ -351,8 +351,25 @@ const consolePage = {
     }
   },
 
-  // ---------- 单次会话导入（JSON/CSV） ----------
+  // ---------- 一键清空数据库 ----------
 
+  async wipeDatabase() {
+    const errEl = document.getElementById('db-error');
+    errEl.textContent = '';
+    if (!confirm('确定要一键清空数据库吗？\n\n将删除全部会话与轨迹数据、恢复默认系统配置，并把管理员密码重置为初始密码。此操作不可恢复！')) return;
+    if (!confirm('请再次确认：清空后所有历史记录将永久丢失，确定继续？')) return;
+    try {
+      const res = await fetch('/api/database/wipe', { method: 'POST', credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('清空失败 (' + res.status + ')'));
+      alert('数据库已清空（配置与密码已恢复初始状态），页面即将刷新');
+      location.reload();
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  },
+
+  // ---------- 单次会话导入（JSON/CSV） ----------
   async importSession() {
     const errEl = document.getElementById('session-import-error');
     const okEl = document.getElementById('session-import-ok');

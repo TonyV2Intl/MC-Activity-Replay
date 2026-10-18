@@ -63,6 +63,7 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 
 			auth.GET("/database/export", exportDatabase(database))
 			auth.POST("/database/import", importDatabase(database, cfg, coll))
+			auth.POST("/database/wipe", wipeDatabase(database, cfg, coll))
 		}
 	}
 

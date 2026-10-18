@@ -36,6 +36,10 @@
           <label><input type="checkbox" class="tip-field" value="station" checked> 站点</label>
           <label><input type="checkbox" class="tip-field" value="route" checked> 线路</label>
         </div>
+        <div class="check-group" title="相邻数据点间移动超过 1000 格（传送/重连）的轨迹段用虚线绘制，区别于正常移动">
+          <label><input type="checkbox" id="check-dash-jump" checked> <span>超 1000 格跳跃段用虚线连接</span></label>
+          <span class="hint">关闭后跳跃段与普通轨迹一样用实线绘制</span>
+        </div>
         <div class="check-group" title="浏览器无法直连瓦片服务器（跨域/内网/防火墙）时，让瓦片经本系统服务器中转下载">
           <label><input type="checkbox" id="check-tile-proxy"> <span>瓦片经服务器代理</span></label>
           <span class="hint" id="tile-source-hint"></span>

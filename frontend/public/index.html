@@ -160,6 +160,10 @@
         <button onclick="consolePage.importSession()">导入单次会话（JSON/CSV）</button>
         <span class="hint">导入一次会话数据（不清空现有数据）；JSON 为「导出会话 JSON」，CSV 为「导出会话 CSV」的宽表格式（time,player_uuid,player_name,x,z,yaw,station_id,route_id）</span>
       </div>
+      <div class="form-row">
+        <button class="danger" onclick="consolePage.wipeDatabase()">一键清空数据库</button>
+        <span class="hint">删除全部会话与轨迹数据、恢复默认系统配置（含重置管理员密码为初始密码），相当于全新安装；用于彻底重置避免旧配置冲突，**不可恢复**</span>
+      </div>
       <div class="error-text" id="db-error"></div>
       <div class="ok-text" id="session-import-ok"></div>
       <div class="error-text" id="session-import-error"></div>

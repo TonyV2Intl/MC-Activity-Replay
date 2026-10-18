@@ -319,6 +319,32 @@ table.data tr.clickable { cursor: pointer; }
   white-space: nowrap;
   flex: none;
 }
+/* 玩家轨迹颜色指定（色板 + 自动重置） */
+.player-item .color-box { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.player-item .player-color {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  flex: none;
+}
+.player-item .player-color::-webkit-color-swatch-wrapper { padding: 1px; }
+.player-item .player-color::-webkit-color-swatch { border: none; border-radius: 3px; }
+.player-item .color-auto {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
 .player-item .follow-btn:hover { color: var(--text); border-color: var(--accent); }
 .player-item .follow-btn.active {
   color: #062f33;

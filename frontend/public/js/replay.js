@@ -66,6 +66,10 @@ const replayPage = {
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/站点/线路）
 
+  dashJump: true,           // 超 1000 格跳跃段是否用虚线连接（localStorage 持久化）
+  playerColors: {},         // uuid -> '#rrggbb' 用户指定的轨迹颜色（localStorage 持久化）
+  rebuilding: false,        // 正在本地重建轨迹（抑制 fitBounds 等副作用）
+
   tileProxy: false,         // 瓦片是否经服务器代理下载（localStorage 持久化）
   mirrorUrl: '',            // 瓦片镜像地址（来自系统配置 mirror_url，留空 = 用会话记录地址）
 
@@ -82,15 +86,19 @@ const replayPage = {
     }
     this.sessionId = id;
 
-    // 读取偏好（localStorage，跨会话保持）：常显名字 / 速度模式 / tooltip 栏目 / 瓦片代理
+    // 读取偏好（localStorage，跨会话保持）：常显名字 / 速度模式 / tooltip 栏目 /
+    // 瓦片代理 / 虚线连接 / 玩家轨迹颜色
     try {
       this.tooltipPermanent = localStorage.getItem('mc-replay.tooltipPermanent') === '1';
       this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
       this.tileProxy = localStorage.getItem('mc-replay.tileProxy') === '1';
+      this.dashJump = localStorage.getItem('mc-replay.dashJump') !== '0';
       const savedFields = JSON.parse(localStorage.getItem('mc-replay.tipFields') || 'null');
       this.tipFields = Object.assign({}, DEFAULT_TIP_FIELDS, savedFields || {});
+      this.playerColors = JSON.parse(localStorage.getItem('mc-replay.playerColors') || '{}') || {};
     } catch (e) { /* 隐私模式等场景忽略 */ }
     if (!this.tipFields) this.tipFields = Object.assign({}, DEFAULT_TIP_FIELDS);
+    if (!this.playerColors || typeof this.playerColors !== 'object') this.playerColors = {};
 
     try {
       this.session = await api('/sessions/' + id);
@@ -245,6 +253,13 @@ const replayPage = {
       proxyCb.addEventListener('change', () => this.setTileProxy(proxyCb.checked));
     }
 
+    // 跳跃段虚线连接开关（偏好持久化到 localStorage，切换后重建全部已加载轨迹）
+    const dashCb = document.getElementById('check-dash-jump');
+    if (dashCb) {
+      dashCb.checked = this.dashJump;
+      dashCb.addEventListener('change', () => this.setDashJump(dashCb.checked));
+    }
+
     // 速度推算模式（持久化到 localStorage，切换后强制刷新所有 tooltip）
     const speedRadios = document.querySelectorAll('input[name="speed-mode"]');
     speedRadios.forEach((r) => {
@@ -298,6 +313,34 @@ const replayPage = {
       count.className = 'count';
       count.textContent = fmtNum(p.point_count);
 
+      // 轨迹颜色：色板指定 + 「自动」清除指定（恢复自动分配）
+      const colorBox = document.createElement('span');
+      colorBox.className = 'color-box';
+
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.className = 'player-color';
+      colorInput.dataset.uuid = p.uuid;
+      colorInput.value = this.playerColors[p.uuid] || PLAYER_COLORS[0];
+      colorInput.title = '指定该玩家轨迹颜色（默认按加载顺序自动分配）';
+      // 位于 label 内，需阻止事件冒泡，避免点击色板误触发行迹加载复选框
+      colorInput.addEventListener('click', (e) => e.stopPropagation());
+      colorInput.addEventListener('change', () => this.setPlayerColor(p.uuid, colorInput.value));
+
+      const autoBtn = document.createElement('button');
+      autoBtn.type = 'button';
+      autoBtn.className = 'color-auto';
+      autoBtn.textContent = '自动';
+      autoBtn.title = '清除指定颜色，恢复自动分配';
+      autoBtn.style.display = this.playerColors[p.uuid] ? '' : 'none';
+      autoBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.clearPlayerColor(p.uuid);
+      });
+
+      colorBox.append(colorInput, autoBtn);
+
       const followBtn = document.createElement('button');
       followBtn.type = 'button';
       followBtn.className = 'follow-btn';
@@ -310,7 +353,7 @@ const replayPage = {
         this.toggleFollow(p.uuid);
       });
 
-      label.append(cb, img, name, count, followBtn);
+      label.append(cb, img, name, count, colorBox, followBtn);
       box.appendChild(label);
     }
   },
@@ -540,6 +583,7 @@ const replayPage = {
 
     this.buildTrack(uuid, name, points);
     this.recomputeRange();
+    this.syncColorInputs();
 
     // 加载期间用户可能已取消勾选
     const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
@@ -568,8 +612,9 @@ const replayPage = {
     } catch (e) { /* 忽略 */ }
   },
 
-  /** 由原始点构建 TrackPlayer（<2 个点退化为普通标记） */
-  buildTrack(uuid, name, points) {
+  /** 由原始点构建 TrackPlayer（<2 个点退化为普通标记）。
+   * @param {string} keepColor 重建时传入原轨迹颜色，保持视觉连续（新加载时不传） */
+  buildTrack(uuid, name, points, keepColor) {
     if (!points.length) return;
     const n = points.length;
     const times = new Array(n);
@@ -596,12 +641,13 @@ const replayPage = {
     }
     const total = cum[n - 1];
 
-    // 段属性：相邻两点方块距离超过阈值判定为跳跃段（传送/重连），后续用虚线绘制
+    // 段属性：相邻两点方块距离超过阈值判定为跳跃段（传送/重连），
+    // 用户开启虚线选项时用虚线绘制，否则与普通段一致
     const dashed = new Array(n > 1 ? n - 1 : 0);
     for (let i = 0; i < n - 1; i++) {
       const dx = xs[i + 1] - xs[i];
       const dz = zs[i + 1] - zs[i];
-      dashed[i] = Math.sqrt(dx * dx + dz * dz) > DASH_JUMP_BLOCKS;
+      dashed[i] = this.dashJump && Math.sqrt(dx * dx + dz * dz) > DASH_JUMP_BLOCKS;
     }
     // 连续同属性段合并为 run（减少 polyline 数量与每帧更新开销）；
     // run 覆盖点索引 [startIdx, endIdx]（含两端）
@@ -617,8 +663,7 @@ const replayPage = {
       runs.push({ startIdx: s, endIdx: n - 1, dash: dashed[s] });
     }
 
-    const color = PLAYER_COLORS[this.colorIndex % PLAYER_COLORS.length];
-    this.colorIndex++;
+    const color = this.resolveTrackColor(uuid, keepColor);
 
     const icon = L.icon({
       iconUrl: avatarURL(uuid),
@@ -628,6 +673,8 @@ const replayPage = {
 
     const track = {
       uuid, name, color, times, latlngs, yaws, xs, zs, seg, cum, total,
+      rawPoints: points,      // 原始点缓存（切换虚线/颜色时本地重建，无需重新请求）
+      rawName: name,
       tp: null, marker: null,
       runs,                   // 折线分组 [{startIdx, endIdx, dash, latlngs, cumStart, cumEnd,
                              //   passedLine, notPassedLine, state, splitSeg, splitAlpha}]
@@ -692,10 +739,91 @@ const replayPage = {
 
     this.tracks.set(uuid, track);
 
-    // 首个轨迹加载后自动适配视野
-    if (this.tracks.size === 1) {
+    // 首个轨迹加载后自动适配视野（本地重建时不触发，避免视图跳动）
+    if (!this.rebuilding && this.tracks.size === 1) {
       this.map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
     }
+  },
+
+  /* ---------- 轨迹颜色 ---------- */
+
+  /** 解析轨迹颜色：用户指定 > 重建保持 > 按 palette 顺序自动分配 */
+  resolveTrackColor(uuid, keepColor) {
+    const override = this.playerColors[uuid];
+    if (override) return override;
+    if (keepColor) return keepColor;
+    const c = PLAYER_COLORS[this.colorIndex % PLAYER_COLORS.length];
+    this.colorIndex++;
+    return c;
+  },
+
+  /** 本地重建已加载轨迹（切换虚线/颜色时调用，不重新请求数据） */
+  rebuildTrack(uuid) {
+    const old = this.tracks.get(uuid);
+    if (!old || !old.rawPoints) return;
+    const follow = this.followUuid === uuid ? uuid : null;
+    const raw = old.rawPoints;
+    const name = old.rawName || old.name;
+    const keepColor = old.color;
+    const transit = old.transitTimes.length
+      ? { times: old.transitTimes, recs: old.transitRecs } : null;
+    this.rebuilding = true;
+    try {
+      this.removeTrack(uuid);
+      this.buildTrack(uuid, name, raw, keepColor);
+    } finally {
+      this.rebuilding = false;
+    }
+    const t = this.tracks.get(uuid);
+    if (t && transit) {
+      t.transitTimes = transit.times;
+      t.transitRecs = transit.recs;
+    }
+    if (follow) this.setFollow(follow);
+    this.recomputeRange();
+    this.render();
+    this.syncColorInputs();
+  },
+
+  /** 指定玩家轨迹颜色（localStorage 持久化，已加载则立即重建生效） */
+  setPlayerColor(uuid, color) {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return;
+    this.playerColors[uuid] = color;
+    try {
+      localStorage.setItem('mc-replay.playerColors', JSON.stringify(this.playerColors));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    if (this.tracks.has(uuid)) this.rebuildTrack(uuid);
+    this.syncColorInputs();
+  },
+
+  /** 清除指定颜色，恢复自动分配（已加载轨迹保持当前显示色，避免视觉跳变） */
+  clearPlayerColor(uuid) {
+    delete this.playerColors[uuid];
+    try {
+      localStorage.setItem('mc-replay.playerColors', JSON.stringify(this.playerColors));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    if (this.tracks.has(uuid)) this.rebuildTrack(uuid);
+    this.syncColorInputs();
+  },
+
+  /** 把玩家列表的颜色输入框同步为当前生效色（未加载且无指定时显示 palette 首色） */
+  syncColorInputs() {
+    document.querySelectorAll('#player-list input.player-color').forEach((inp) => {
+      const uuid = inp.dataset.uuid;
+      const track = this.tracks.get(uuid);
+      inp.value = (track && track.color) || this.playerColors[uuid] || PLAYER_COLORS[0];
+      const autoBtn = inp.parentElement.querySelector('.color-auto');
+      if (autoBtn) autoBtn.style.display = this.playerColors[uuid] ? '' : 'none';
+    });
+  },
+
+  /** 切换「超 1000 格跳跃段用虚线连接」（localStorage 持久化，重建全部已加载轨迹） */
+  setDashJump(on) {
+    this.dashJump = !!on;
+    try {
+      localStorage.setItem('mc-replay.dashJump', this.dashJump ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const uuid of [...this.tracks.keys()]) this.rebuildTrack(uuid);
   },
 
   removeTrack(uuid) {
