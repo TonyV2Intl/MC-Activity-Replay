@@ -73,7 +73,7 @@ const consolePage = {
       }
       el.innerHTML = live.players.map(p =>
         '<div class="live-player">' +
-          '<img src="' + esc(avatarURL(p.uuid, 32)) + '" alt="" loading="lazy">' +
+          '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
           '<div class="info">' +
             '<div class="name">' + esc(p.name) + '</div>' +
             '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) +

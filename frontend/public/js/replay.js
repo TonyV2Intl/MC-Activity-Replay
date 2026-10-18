@@ -154,7 +154,7 @@ const replayPage = {
       cb.addEventListener('change', () => this.togglePlayer(p.uuid, cb.checked));
 
       const img = document.createElement('img');
-      img.src = avatarURL(p.uuid, 32);
+      img.src = avatarURL(p.uuid);
       img.alt = '';
       img.loading = 'lazy';
 
@@ -258,7 +258,7 @@ const replayPage = {
     this.colorIndex++;
 
     const icon = L.icon({
-      iconUrl: avatarURL(uuid, 32),
+      iconUrl: avatarURL(uuid),
       iconSize: [32, 32],
       iconAnchor: [16, 16],
     });

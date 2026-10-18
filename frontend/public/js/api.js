@@ -45,10 +45,9 @@ function formatUUID(uuid, withHyphens) {
          clean.slice(16, 20) + '-' + clean.slice(20, 32);
 }
 
-/** MCHeads 头像 URL（需要带连字符 UUID） */
-function avatarURL(uuid, size) {
-  const s = size || 32;
-  return 'https://mc-heads.net/avatar/' + formatUUID(uuid, true) + '/' + s;
+/** MCHeads 头像 URL（需要带连字符 UUID；不带尺寸后缀，/32 等路径会 403） */
+function avatarURL(uuid) {
+  return 'https://mc-heads.net/avatar/' + formatUUID(uuid, true);
 }
 
 /** 时间格式化：YYYY-MM-DD HH:mm:ss（本地时区） */
