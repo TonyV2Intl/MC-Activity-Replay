@@ -77,7 +77,7 @@ func trajectory(database *db.DB) gin.HandlerFunc {
 		}
 
 		rows, err := database.Pool.Query(ctx,
-			`SELECT time, x, z, health, armor, yaw FROM player_activity
+			`SELECT time, x, z, yaw FROM player_activity
 			 WHERE session_id = $1 AND player_uuid = $2
 			 ORDER BY time ASC OFFSET $3 LIMIT $4`,
 			id, uuid, chunkIndex*chunkSize, chunkSize)
@@ -90,7 +90,7 @@ func trajectory(database *db.DB) gin.HandlerFunc {
 		points := make([]models.ActivityPoint, 0, chunkSize)
 		for rows.Next() {
 			var p models.ActivityPoint
-			if err := rows.Scan(&p.Time, &p.X, &p.Z, &p.Health, &p.Armor, &p.Yaw); err != nil {
+			if err := rows.Scan(&p.Time, &p.X, &p.Z, &p.Yaw); err != nil {
 				serverError(c, err)
 				return
 			}
@@ -157,7 +157,7 @@ func snapshot(database *db.DB) gin.HandlerFunc {
 		}
 
 		rows, err := database.Pool.Query(c.Request.Context(),
-			`SELECT DISTINCT ON (player_uuid) player_uuid, player_name, x, z, health, armor, yaw, time
+			`SELECT DISTINCT ON (player_uuid) player_uuid, player_name, x, z, yaw, time
 			 FROM player_activity
 			 WHERE session_id = $1 AND time <= $2
 			 ORDER BY player_uuid, time DESC`, id, at)
@@ -170,7 +170,7 @@ func snapshot(database *db.DB) gin.HandlerFunc {
 		players := make([]models.SnapshotPlayer, 0)
 		for rows.Next() {
 			var p models.SnapshotPlayer
-			if err := rows.Scan(&p.UUID, &p.Name, &p.X, &p.Z, &p.Health, &p.Armor, &p.Yaw, &p.Time); err != nil {
+			if err := rows.Scan(&p.UUID, &p.Name, &p.X, &p.Z, &p.Yaw, &p.Time); err != nil {
 				serverError(c, err)
 				return
 			}

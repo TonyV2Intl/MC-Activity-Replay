@@ -13,13 +13,11 @@ import (
 
 // activityRow 待写入 player_activity 的一行
 type activityRow struct {
-	Time   time.Time
-	UUID   string
-	Name   string
-	X, Z   float64
-	Health *float64
-	Armor  *int
-	Yaw    *float64
+	Time time.Time
+	UUID string
+	Name string
+	X, Z float64
+	Yaw  *float64
 }
 
 // transitRow 待写入 player_transit_state 的一行
@@ -38,8 +36,6 @@ type mergedPlayer struct {
 	Name    string
 	World   string
 	X, Z    float64
-	Health  *float64
-	Armor   *int
 	Yaw     *float64
 	Station string
 	Route   string
@@ -113,26 +109,18 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 	var newTransit []transitRow
 	for _, p := range filtered {
 		key := posKey{X: p.X, Z: p.Z}
-		if p.Health != nil {
-			key.Health, key.HealthOK = *p.Health, true
-		}
-		if p.Armor != nil {
-			key.Armor, key.ArmorOK = *p.Armor, true
-		}
 		if p.Yaw != nil {
 			key.Yaw, key.YawOK = *p.Yaw, true
 		}
 		if prev, ok := c.lastPositions[p.UUID]; !ok || prev != key {
 			c.lastPositions[p.UUID] = key
 			newActivity = append(newActivity, activityRow{
-				Time:   now,
-				UUID:   p.UUID,
-				Name:   p.Name,
-				X:      p.X,
-				Z:      p.Z,
-				Health: p.Health,
-				Armor:  p.Armor,
-				Yaw:    p.Yaw,
+				Time: now,
+				UUID: p.UUID,
+				Name: p.Name,
+				X:    p.X,
+				Z:    p.Z,
+				Yaw:  p.Yaw,
 			})
 		}
 
@@ -173,14 +161,12 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 	live := make([]models.LivePlayer, 0, len(filtered))
 	for _, p := range filtered {
 		live = append(live, models.LivePlayer{
-			UUID:   p.UUID,
-			Name:   p.Name,
-			World:  p.World,
-			X:      p.X,
-			Z:      p.Z,
-			Health: p.Health,
-			Armor:  p.Armor,
-			Yaw:    p.Yaw,
+			UUID:  p.UUID,
+			Name:  p.Name,
+			World: p.World,
+			X:     p.X,
+			Z:     p.Z,
+			Yaw:   p.Yaw,
 		})
 	}
 	c.setLive(live)
@@ -204,14 +190,12 @@ func (c *Collector) mergePlayers(smPlayers []SquaremapPlayer, mtrData *MTRData, 
 		seen[uuid] = true
 		index[uuid] = len(result)
 		result = append(result, mergedPlayer{
-			UUID:   uuid,
-			Name:   sp.Name,
-			World:  sp.World,
-			X:      sp.X,
-			Z:      sp.Z,
-			Health: sp.Health,
-			Armor:  sp.Armor,
-			Yaw:    sp.Yaw,
+			UUID:  uuid,
+			Name:  sp.Name,
+			World: sp.World,
+			X:     sp.X,
+			Z:     sp.Z,
+			Yaw:   sp.Yaw,
 		})
 	}
 
@@ -293,10 +277,10 @@ func (c *Collector) flush(ctx context.Context, sessionID int64) error {
 	if len(rows) > 0 {
 		_, err := c.db.Pool.CopyFrom(ctx,
 			pgx.Identifier{"player_activity"},
-			[]string{"time", "session_id", "player_uuid", "player_name", "x", "z", "health", "armor", "yaw"},
+			[]string{"time", "session_id", "player_uuid", "player_name", "x", "z", "yaw"},
 			pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
 				r := rows[i]
-				return []any{r.Time, sessionID, r.UUID, r.Name, r.X, r.Z, r.Health, r.Armor, r.Yaw}, nil
+				return []any{r.Time, sessionID, r.UUID, r.Name, r.X, r.Z, r.Yaw}, nil
 			}))
 		if err != nil {
 			// 写回缓冲以便重试

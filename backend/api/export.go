@@ -102,7 +102,7 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 		firstPoint := true
 		for {
 			aRows, err := database.Pool.Query(ctx,
-				`SELECT time, x, z, health, armor, yaw FROM player_activity
+				`SELECT time, x, z, yaw FROM player_activity
 				 WHERE session_id = $1 AND player_uuid = $2 ORDER BY time ASC OFFSET $3 LIMIT $4`,
 				sess.ID, p.uuid, offset, exportBatchSize)
 			if err != nil {
@@ -111,7 +111,7 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 			n := 0
 			for aRows.Next() {
 				var pt models.ActivityPoint
-				if err := aRows.Scan(&pt.Time, &pt.X, &pt.Z, &pt.Health, &pt.Armor, &pt.Yaw); err != nil {
+				if err := aRows.Scan(&pt.Time, &pt.X, &pt.Z, &pt.Yaw); err != nil {
 					aRows.Close()
 					return
 				}
@@ -169,11 +169,11 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
 	w := csv.NewWriter(c.Writer)
 	defer w.Flush()
 
-	w.Write([]string{"time", "player_uuid", "player_name", "x", "z", "health", "armor", "yaw", "station_id", "route_id"})
+	w.Write([]string{"time", "player_uuid", "player_name", "x", "z", "yaw", "station_id", "route_id"})
 
 	// 用 LATERAL 关联每个位置点对应的最新乘坐状态
 	rows, err := database.Pool.Query(ctx,
-		`SELECT a.time, a.player_uuid, a.player_name, a.x, a.z, a.health, a.armor, a.yaw,
+		`SELECT a.time, a.player_uuid, a.player_name, a.x, a.z, a.yaw,
 		        t.station_id, t.route_id
 		 FROM player_activity a
 		 LEFT JOIN LATERAL (
@@ -193,13 +193,11 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
 			t          time.Time
 			uuid, name string
 			x, z       float64
-			health     *float64
-			armor      *int
 			yaw        *float64
 			stationID  *string
 			routeID    *string
 		)
-		if err := rows.Scan(&t, &uuid, &name, &x, &z, &health, &armor, &yaw, &stationID, &routeID); err != nil {
+		if err := rows.Scan(&t, &uuid, &name, &x, &z, &yaw, &stationID, &routeID); err != nil {
 			return
 		}
 		w.Write([]string{
@@ -208,8 +206,6 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
 			name,
 			strconv.FormatFloat(x, 'f', -1, 64),
 			strconv.FormatFloat(z, 'f', -1, 64),
-			formatFloatPtr(health),
-			formatIntPtr(armor),
 			formatFloatPtr(yaw),
 			formatStringPtr(stationID),
 			formatStringPtr(routeID),
@@ -222,13 +218,6 @@ func formatFloatPtr(v *float64) string {
 		return ""
 	}
 	return strconv.FormatFloat(*v, 'f', -1, 64)
-}
-
-func formatIntPtr(v *int) string {
-	if v == nil {
-		return ""
-	}
-	return strconv.Itoa(*v)
 }
 
 func formatStringPtr(v *string) string {
@@ -317,10 +306,10 @@ func copyActivity(ctx context.Context, tx pgx.Tx, sessionID int64, uuid, name st
 		batch := points[start:end]
 		_, err := tx.CopyFrom(ctx,
 			pgx.Identifier{"player_activity"},
-			[]string{"time", "session_id", "player_uuid", "player_name", "x", "z", "health", "armor", "yaw"},
+			[]string{"time", "session_id", "player_uuid", "player_name", "x", "z", "yaw"},
 			pgx.CopyFromSlice(len(batch), func(i int) ([]any, error) {
 				p := batch[i]
-				return []any{p.Time, sessionID, uuid, name, p.X, p.Z, p.Health, p.Armor, p.Yaw}, nil
+				return []any{p.Time, sessionID, uuid, name, p.X, p.Z, p.Yaw}, nil
 			}))
 		if err != nil {
 			return fmt.Errorf("导入位置数据失败: %w", err)
@@ -368,7 +357,7 @@ var dataSnapshotTables = []struct {
 }{
 	{"sessions", `id, name, started_at, stopped_at, max_duration_sec, stopped_reason,
 		poll_interval_ms, mtr_url, squaremap_url, world, tile_zoom, tile_url_template, created_at`, "id"},
-	{"player_activity", `"time", session_id, player_uuid, player_name, x, z, health, armor, yaw`,
+	{"player_activity", `"time", session_id, player_uuid, player_name, x, z, yaw`,
 		`"time", session_id, player_uuid`},
 	{"player_transit_state", `"time", session_id, player_uuid, station_id, route_id,
 		route_station_id1, route_station_id2`, `"time", session_id, player_uuid`},
@@ -379,13 +368,14 @@ var dataSnapshotTables = []struct {
 // exportDatabase 导出整个数据库的数据快照（SQL 文件，可被 psql 直接执行）。
 //
 // 设计说明（为何不用 pg_dump --data-only）：
-//   1. TimescaleDB hypertable 的物理数据位于 _timescaledb_internal 的分片表中，
-//      pg_dump 对 hypertable 父表的 COPY 输出为 0 行，只有分片表含数据；
-//      排除分片表（或只导 public.*）都会丢掉全部轨迹数据。
-//   2. 带 --clean 的 pg_dump 导出含 "ALTER TABLE ONLY ... DROP CONSTRAINT"，
-//      TimescaleDB hypertable 不接受该语法，导致导出文件无法被 psql 重新导入。
-//   3. Alpine 的 pg_dump 非 TimescaleDB 补丁版，不会生成 timescaledb_post_restore()，
-//      直接恢复 hypertable DDL 会在外键校验阶段报 "table is not a hypertable"。
+//  1. TimescaleDB hypertable 的物理数据位于 _timescaledb_internal 的分片表中，
+//     pg_dump 对 hypertable 父表的 COPY 输出为 0 行，只有分片表含数据；
+//     排除分片表（或只导 public.*）都会丢掉全部轨迹数据。
+//  2. 带 --clean 的 pg_dump 导出含 "ALTER TABLE ONLY ... DROP CONSTRAINT"，
+//     TimescaleDB hypertable 不接受该语法，导致导出文件无法被 psql 重新导入。
+//  3. Alpine 的 pg_dump 非 TimescaleDB 补丁版，不会生成 timescaledb_post_restore()，
+//     直接恢复 hypertable DDL 会在外键校验阶段报 "table is not a hypertable"。
+//
 // 因此改为通过服务端 COPY ... TO STDOUT 经 hypertable 父表读出全部行
 // （转义由 PostgreSQL 保证，流式输出不占用内存），生成与 pg_dump --data-only
 // 兼容的 COPY 格式 SQL；导入仍使用 psql 执行（见 importDatabase）。
@@ -438,12 +428,14 @@ END $$;
 		}
 	}
 }
+
 // importDatabase 使用 psql 导入数据库
 // importDatabase 整库恢复：删除并重建数据库，由 EnsureSchema 重建结构后执行数据快照。
 // 语义为"恢复"而非"在现有库上执行"——先重置为空库并重建 hypertable 结构，再导入数据：
-//   1. 避免 TimescaleDB 对 "ALTER TABLE ONLY" 的限制影响；
-//   2. 避免外部 SQL 直接注入 _timescaledb_catalog 导致扩展缓存与 catalog 不一致；
-//   3. 恢复结果与导出一致，不会被残留数据污染。
+//  1. 避免 TimescaleDB 对 "ALTER TABLE ONLY" 的限制影响；
+//  2. 避免外部 SQL 直接注入 _timescaledb_catalog 导致扩展缓存与 catalog 不一致；
+//  3. 恢复结果与导出一致，不会被残留数据污染。
+//
 // 导入文件应为控制台"数据库导出"产生的数据快照（pg_dump --data-only）。
 func importDatabase(database *db.DB, cfg *config.Config, coll *collector.Collector) gin.HandlerFunc {
 	return func(c *gin.Context) {

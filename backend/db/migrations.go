@@ -38,8 +38,6 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 			player_name TEXT NOT NULL,
 			x           DOUBLE PRECISION NOT NULL,
 			z           DOUBLE PRECISION NOT NULL,
-			health      REAL,
-			armor       INTEGER,
 			yaw         REAL
 		)`,
 		`CREATE TABLE IF NOT EXISTS player_transit_state (
@@ -69,6 +67,14 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 	for _, s := range stmts {
 		if _, err := pool.Exec(ctx, s); err != nil {
 			return fmt.Errorf("执行建表语句失败: %w", err)
+		}
+	}
+
+	// 旧版本数据库可能残留 health/armor 列（已停止采集），幂等清理
+	for _, col := range []string{"health", "armor"} {
+		if _, err := pool.Exec(ctx,
+			fmt.Sprintf(`ALTER TABLE player_activity DROP COLUMN IF EXISTS %s`, col)); err != nil {
+			return fmt.Errorf("清理 player_activity.%s 列失败: %w", col, err)
 		}
 	}
 

@@ -33,12 +33,10 @@ type SessionWithStats struct {
 
 // ActivityPoint 玩家位置点
 type ActivityPoint struct {
-	Time   time.Time `json:"time"`
-	X      float64   `json:"x"`
-	Z      float64   `json:"z"`
-	Health *float64  `json:"health"`
-	Armor  *int      `json:"armor"`
-	Yaw    *float64  `json:"yaw"`
+	Time time.Time `json:"time"`
+	X    float64   `json:"x"`
+	Z    float64   `json:"z"`
+	Yaw  *float64  `json:"yaw"`
 }
 
 // TransitRecord MTR 乘坐状态变化记录
@@ -70,14 +68,12 @@ type TrajectoryChunk struct {
 
 // SnapshotPlayer 某一时间点的玩家快照
 type SnapshotPlayer struct {
-	UUID   string    `json:"uuid"`
-	Name   string    `json:"name"`
-	X      float64   `json:"x"`
-	Z      float64   `json:"z"`
-	Health *float64  `json:"health"`
-	Armor  *int      `json:"armor"`
-	Yaw    *float64  `json:"yaw"`
-	Time   time.Time `json:"time"`
+	UUID string    `json:"uuid"`
+	Name string    `json:"name"`
+	X    float64   `json:"x"`
+	Z    float64   `json:"z"`
+	Yaw  *float64  `json:"yaw"`
+	Time time.Time `json:"time"`
 }
 
 // ---------- 采集器 ----------
@@ -101,14 +97,12 @@ type ErrorEntry struct {
 
 // LivePlayer 实时监控中的玩家
 type LivePlayer struct {
-	UUID   string   `json:"uuid"`
-	Name   string   `json:"name"`
-	World  string   `json:"world"`
-	X      float64  `json:"x"`
-	Z      float64  `json:"z"`
-	Health *float64 `json:"health"`
-	Armor  *int     `json:"armor"`
-	Yaw    *float64 `json:"yaw"`
+	UUID  string   `json:"uuid"`
+	Name  string   `json:"name"`
+	World string   `json:"world"`
+	X     float64  `json:"x"`
+	Z     float64  `json:"z"`
+	Yaw   *float64 `json:"yaw"`
 }
 
 // CollectorLive 实时监控响应

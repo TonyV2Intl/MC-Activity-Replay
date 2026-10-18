@@ -12,14 +12,12 @@ import (
 
 // SquaremapPlayer Squaremap players.json 中的单个玩家
 type SquaremapPlayer struct {
-	World  string   `json:"world"`
-	Armor  *int     `json:"armor"`
-	Name   string   `json:"name"`
-	X      float64  `json:"x"`
-	Health *float64 `json:"health"`
-	Z      float64  `json:"z"`
-	UUID   string   `json:"uuid"` // 无连字符 UUID
-	Yaw    *float64 `json:"yaw"`
+	World string   `json:"world"`
+	Name  string   `json:"name"`
+	X     float64  `json:"x"`
+	Z     float64  `json:"z"`
+	UUID  string   `json:"uuid"` // 无连字符 UUID
+	Yaw   *float64 `json:"yaw"`
 }
 
 // squaremapResponse players.json 响应结构

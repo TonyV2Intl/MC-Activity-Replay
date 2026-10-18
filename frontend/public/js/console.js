@@ -76,9 +76,7 @@ const consolePage = {
           '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
           '<div class="info">' +
             '<div class="name">' + esc(p.name) + '</div>' +
-            '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) +
-              (p.health != null ? '  ❤ ' + p.health : '') +
-              (p.armor != null ? '  🛡 ' + p.armor : '') + '</div>' +
+            '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>' +
           '</div>' +
         '</div>'
       ).join('');

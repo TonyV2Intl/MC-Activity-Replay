@@ -31,8 +31,6 @@ CREATE TABLE player_activity (
     player_name TEXT NOT NULL,
     x           DOUBLE PRECISION NOT NULL,
     z           DOUBLE PRECISION NOT NULL,
-    health      REAL,
-    armor       INTEGER,
     yaw         REAL
 );
 

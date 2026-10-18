@@ -69,14 +69,11 @@ type configForCollector struct {
 	SquaremapURL string
 }
 
+// posKey 位置去重键：(x, z, yaw) 与上次写入完全相同则不重复记录
 type posKey struct {
-	X, Z     float64
-	Health   float64
-	HealthOK bool
-	Armor    int
-	ArmorOK  bool
-	Yaw      float64
-	YawOK    bool
+	X, Z  float64
+	Yaw   float64
+	YawOK bool
 }
 
 type transitKey struct {
