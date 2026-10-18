@@ -15,6 +15,9 @@ const consolePage = {
   speedMode: '2',
   speedHistory: new Map(), // uuid -> [{x, z, t}]（t 取后端 polledAt，最多保留 3 个）
 
+  // 实时监控卡片栏目显示开关（localStorage 持久化；名字/头像始终显示）
+  liveFields: { coords: true, speed: true, station: true, route: true },
+
   init() {
     this.refreshStatus();
     this.loadConfig();
@@ -30,6 +33,8 @@ const consolePage = {
     // 速度推算模式（localStorage，跨会话保持）
     try {
       this.speedMode = localStorage.getItem('mc-console.speedMode') || '2';
+      const savedLive = JSON.parse(localStorage.getItem('mc-console.liveFields') || 'null');
+      this.liveFields = Object.assign({}, this.liveFields, savedLive || {});
     } catch (e) { /* 隐私模式等场景忽略 */ }
     const radios = document.querySelectorAll('input[name="live-speed-mode"]');
     radios.forEach((r) => {
@@ -38,6 +43,16 @@ const consolePage = {
         if (!r.checked) return;
         this.speedMode = r.value;
         try { localStorage.setItem('mc-console.speedMode', r.value); } catch (e) { /* 忽略 */ }
+        this.refreshLive();
+      });
+    });
+
+    // 实时监控卡片栏目开关（localStorage，跨会话保持；切换后立即刷新）
+    document.querySelectorAll('.live-field').forEach((cb) => {
+      cb.checked = !!this.liveFields[cb.value];
+      cb.addEventListener('change', () => {
+        this.liveFields[cb.value] = cb.checked;
+        try { localStorage.setItem('mc-console.liveFields', JSON.stringify(this.liveFields)); } catch (e) { /* 忽略 */ }
         this.refreshLive();
       });
     });
@@ -155,31 +170,38 @@ const consolePage = {
         }
       }
       this.updateLiveHint(live);
+      const fields = this.liveFields || {};
       el.innerHTML = live.players.map(p => {
         let html = '<div class="live-player">' +
           '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
           '<div class="info">' +
-            '<div class="name">' + esc(p.name) + '</div>' +
-            '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>';
+          '<div class="name">' + esc(p.name) + '</div>';
+        if (fields.coords) {
+          html += '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>';
+        }
         // 速度推算（格/秒，按用户选择的两点/三点模式）
-        const speed = calcSpeed(this.speedHistory.get(p.uuid), this.speedMode);
-        if (speed != null) {
-          html += '<div class="transit">速度: ' + speed.toFixed(1) + ' 格/s</div>';
+        if (fields.speed) {
+          const speed = calcSpeed(this.speedHistory.get(p.uuid), this.speedMode);
+          if (speed != null) {
+            html += '<div class="transit">速度: ' + speed.toFixed(1) + ' 格/s</div>';
+          }
         }
         // MTR 乘坐状态：站点 + 线路（仅显示名称；名称表未就绪时回退原始 ID）
-        const r = resolveTransit({
-          station: normTransitId(p.station_id),
-          route: normTransitId(p.route_id),
-          rs1: normTransitId(p.route_station_id1),
-          rs2: normTransitId(p.route_station_id2),
-        }, this.network);
-        if (r.stationName) {
-          html += '<div class="transit">站点: ' + esc(r.stationName) + '</div>';
-        }
-        if (r.routeName) {
-          html += '<div class="transit">线路: ' + esc(r.routeName) +
-            (r.fromName && r.toName ? ' ' + esc(r.fromName) + ' → ' + esc(r.toName) : '') +
-            '</div>';
+        if (fields.station || fields.route) {
+          const r = resolveTransit({
+            station: normTransitId(p.station_id),
+            route: normTransitId(p.route_id),
+            rs1: normTransitId(p.route_station_id1),
+            rs2: normTransitId(p.route_station_id2),
+          }, this.network);
+          if (fields.station && r.stationName) {
+            html += '<div class="transit">站点: ' + esc(r.stationName) + '</div>';
+          }
+          if (fields.route && r.routeName) {
+            html += '<div class="transit">线路: ' + esc(r.routeName) +
+              (r.fromName && r.toName ? ' ' + esc(r.fromName) + ' → ' + esc(r.toName) : '') +
+              '</div>';
+          }
         }
         return html + '</div></div>';
       }).join('');
@@ -246,6 +268,7 @@ const consolePage = {
       this.cfg = cfg; // 缓存，供 startRecording 读取瓦片最大缩放等级等默认值
       document.getElementById('cfg-mtr-url').value = cfg.mtr_url || '';
       document.getElementById('cfg-squaremap-url').value = cfg.squaremap_url || '';
+      document.getElementById('cfg-mirror-url').value = cfg.mirror_url || '';
       document.getElementById('cfg-tile-zoom').value = cfg.default_tile_zoom || 3;
     } catch (e) { /* 静默 */ }
   },
@@ -262,6 +285,7 @@ const consolePage = {
           config: {
             mtr_url: document.getElementById('cfg-mtr-url').value.trim(),
             squaremap_url: document.getElementById('cfg-squaremap-url').value.trim(),
+            mirror_url: document.getElementById('cfg-mirror-url').value.trim(),
             default_tile_zoom: document.getElementById('cfg-tile-zoom').value.trim(),
           },
         },

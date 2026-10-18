@@ -218,6 +218,19 @@ table.data tr.clickable { cursor: pointer; }
   color: var(--text-dim);
 }
 .speed-mode label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
+
+/* 复选框组（tooltip 栏目 / 监控卡片栏目 / 瓦片代理开关） */
+.check-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.check-group label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
+.check-group .hint { flex-basis: 100%; }
 .panel-head { display: flex; align-items: center; gap: 10px; }
 .panel-head h2 { margin: 0; }
 

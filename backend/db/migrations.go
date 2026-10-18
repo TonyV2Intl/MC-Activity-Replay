@@ -109,6 +109,7 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 	defaults := [][2]string{
 		{"mtr_url", "https://letsplay.minecrafttransitrailway.com/system-map/mtr/api/map/clients?dimension=0"},
 		{"squaremap_url", "https://letsplay.minecrafttransitrailway.com/world-map"},
+		{"mirror_url", ""},
 		{"tile_url_template", "/tiles/{world}/{zoom}/{x}_{z}.png"},
 		{"default_world", "minecraft_overworld"},
 		{"default_tile_zoom", "3"},

@@ -35,6 +35,9 @@ const CHUNK_CONCURRENCY = 4; // 并行分块请求数
 const DASH_JUMP_BLOCKS = 1000;
 const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
 
+// tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields）
+const DEFAULT_TIP_FIELDS = { name: true, coords: true, speed: true, station: true, route: true };
+
 const replayPage = {
   /* ---------- 状态 ---------- */
   sessionId: null,
@@ -61,6 +64,10 @@ const replayPage = {
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
+  tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/站点/线路）
+
+  tileProxy: false,         // 瓦片是否经服务器代理下载（localStorage 持久化）
+  mirrorUrl: '',            // 瓦片镜像地址（来自系统配置 mirror_url，留空 = 用会话记录地址）
 
   // MTR 站线名称表（ID → 名称，来自 /api/network/names；加载失败时为 null）
   network: null,
@@ -75,11 +82,15 @@ const replayPage = {
     }
     this.sessionId = id;
 
-    // 读取「常显玩家名字」偏好与速度推算模式（localStorage，跨会话保持）
+    // 读取偏好（localStorage，跨会话保持）：常显名字 / 速度模式 / tooltip 栏目 / 瓦片代理
     try {
       this.tooltipPermanent = localStorage.getItem('mc-replay.tooltipPermanent') === '1';
       this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
+      this.tileProxy = localStorage.getItem('mc-replay.tileProxy') === '1';
+      const savedFields = JSON.parse(localStorage.getItem('mc-replay.tipFields') || 'null');
+      this.tipFields = Object.assign({}, DEFAULT_TIP_FIELDS, savedFields || {});
     } catch (e) { /* 隐私模式等场景忽略 */ }
+    if (!this.tipFields) this.tipFields = Object.assign({}, DEFAULT_TIP_FIELDS);
 
     try {
       this.session = await api('/sessions/' + id);
@@ -88,6 +99,12 @@ const replayPage = {
       return;
     }
     document.title = '回放 — ' + (this.session.name || ('会话 ' + id));
+
+    // 瓦片镜像地址（系统配置 mirror_url）：/config 为数据库读取、耗时极短，先于建图加载
+    try {
+      const cfg = await api('/config');
+      this.mirrorUrl = (cfg.config && cfg.config.mirror_url || '').trim();
+    } catch (e) { /* 忽略：无镜像时用会话记录地址 */ }
 
     this.initMap();
     this.bindControls();
@@ -127,9 +144,7 @@ const replayPage = {
       attributionControl: false,
     }).setView(blockToLatLng(0, 0), Math.max(0, TileConfig.maxZoom));
 
-    this.tileLayer = createSquaremapTileLayer(
-      s.squaremap_url, s.tile_url_template, s.world, s.tile_zoom || 3, TileConfig.extraZoom || 2);
-    this.tileLayer.addTo(this.map);
+    this.buildTileLayer();
 
     // 用户手动拖动地图时自动取消跟随（panTo 不触发 dragstart，不会自我取消）
     this.map.on('dragstart', () => {
@@ -137,6 +152,61 @@ const replayPage = {
     });
 
     window.addEventListener('resize', () => this.map && this.map.invalidateSize());
+  },
+
+  /* ---------- 瓦片来源（镜像 / 服务器代理） ---------- */
+
+  /** 回放瓦片上游基址：镜像地址优先，否则会话记录时的 Squaremap 地址 */
+  tileBase() {
+    return String(this.mirrorUrl || this.session.squaremap_url || '').replace(/\/+$/, '');
+  },
+
+  /** 瓦片 URL 模板：代理模式走本系统 /api/tiles/（浏览器只访问本系统），否则用会话记录的模板 */
+  tileTemplate() {
+    return this.tileProxy
+      ? '/api/tiles/{world}/{zoom}/{x}_{z}.png'
+      : (this.session.tile_url_template || '/tiles/{world}/{zoom}/{x}_{z}.png');
+  },
+
+  /** 按当前来源（镜像/代理/原地址）重建瓦片图层 */
+  buildTileLayer() {
+    if (!this.map || !this.session) return;
+    if (this.tileLayer) {
+      this.map.removeLayer(this.tileLayer);
+      this.tileLayer = null;
+    }
+    // 代理模式走同源相对路径 /api/tiles/...（base 必须为空），直连模式用镜像/原地址基址
+    const base = this.tileProxy ? '' : this.tileBase();
+    this.tileLayer = createSquaremapTileLayer(
+      base, this.tileTemplate(), this.session.world,
+      this.session.tile_zoom || 3, TileConfig.extraZoom || 2);
+    this.tileLayer.addTo(this.map);
+    this.updateTileHint();
+  },
+
+  /** 切换「瓦片经服务器代理」（localStorage 持久化，切换后立即重建图层） */
+  setTileProxy(on) {
+    this.tileProxy = !!on;
+    try {
+      localStorage.setItem('mc-replay.tileProxy', this.tileProxy ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.buildTileLayer();
+  },
+
+  /** 更新瓦片来源提示（代理开关/镜像地址变化时调用） */
+  updateTileHint() {
+    const el = document.getElementById('tile-source-hint');
+    if (!el) return;
+    const via = this.tileProxy ? '服务器代理' : '浏览器直连';
+    let src;
+    if (this.mirrorUrl) {
+      src = '镜像 ' + this.mirrorUrl;
+    } else if (this.tileProxy) {
+      src = '上游 ' + (this.session.squaremap_url || '（未记录）');
+    } else {
+      src = '原地址 ' + (this.session.squaremap_url || '（未记录）');
+    }
+    el.textContent = '瓦片来源：' + via + ' · ' + src;
   },
 
   bindControls() {
@@ -168,6 +238,13 @@ const replayPage = {
       tipCb.addEventListener('change', () => this.setTooltipPermanent(tipCb.checked));
     }
 
+    // 瓦片经服务器代理开关（偏好持久化到 localStorage，切换后重建瓦片图层）
+    const proxyCb = document.getElementById('check-tile-proxy');
+    if (proxyCb) {
+      proxyCb.checked = this.tileProxy;
+      proxyCb.addEventListener('change', () => this.setTileProxy(proxyCb.checked));
+    }
+
     // 速度推算模式（持久化到 localStorage，切换后强制刷新所有 tooltip）
     const speedRadios = document.querySelectorAll('input[name="speed-mode"]');
     speedRadios.forEach((r) => {
@@ -175,6 +252,13 @@ const replayPage = {
       r.addEventListener('change', () => {
         if (r.checked) this.setSpeedMode(r.value);
       });
+    });
+
+    // tooltip 栏目显示开关（持久化到 localStorage，切换后强制刷新所有 tooltip）
+    const tipFieldCbs = document.querySelectorAll('.tip-field');
+    tipFieldCbs.forEach((cb) => {
+      cb.checked = !!(this.tipFields || DEFAULT_TIP_FIELDS)[cb.value];
+      cb.addEventListener('change', () => this.setTipField(cb.value, cb.checked));
     });
 
     Recorder.onStateChange = (recording) => {
@@ -374,35 +458,55 @@ const replayPage = {
 
   /**
    * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前时刻的站点/线路名称。
+   * 各栏目由 tipFields 开关控制（名字/坐标/速度/站点/线路），偏好持久化在 localStorage。
    * 坐标由 marker 当前渲染位置经 latLngToBlock 逆换算为方块坐标（取整显示）；
    * 仅显示站名/线路名（不显示 ID）；名称表未加载/未收录时回退为原始 ID。
    * @param {object} track  track 对象
    * @param {L.Marker} [marker] 头像标记（取其当前位置换算坐标）
    */
   tooltipHTML(track, marker) {
-    let html = '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
-    if (marker) {
+    const f = this.tipFields || DEFAULT_TIP_FIELDS;
+    let html = '';
+    if (f.name) {
+      html += '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
+    }
+    if (f.coords && marker) {
       const b = latLngToBlock(marker.getLatLng());
       html += '<br><span class="tip-sub">坐标: ' + Math.round(b.x) + ', ' + Math.round(b.z) + '</span>';
     }
     // 速度推算（格/s）
-    const v = this.speedAtTrack(track);
-    if (v != null && isFinite(v)) {
-      html += '<br><span class="tip-sub">速度: ' + v.toFixed(1) + ' 格/s</span>';
-    }
-    const rec = this.transitAt(track, this.currentTime);
-    if (rec) {
-      const r = resolveTransit(rec, this.network);
-      if (r.stationName) {
-        html += '<br><span class="tip-sub">站点: ' + escapeHtml(r.stationName) + '</span>';
-      }
-      if (r.routeName) {
-        let line = '线路: ' + escapeHtml(r.routeName);
-        if (r.fromName && r.toName) line += ' ' + escapeHtml(r.fromName) + ' → ' + escapeHtml(r.toName);
-        html += '<br><span class="tip-sub">' + line + '</span>';
+    if (f.speed) {
+      const v = this.speedAtTrack(track);
+      if (v != null && isFinite(v)) {
+        html += '<br><span class="tip-sub">速度: ' + v.toFixed(1) + ' 格/s</span>';
       }
     }
-    return html;
+    if (f.station || f.route) {
+      const rec = this.transitAt(track, this.currentTime);
+      if (rec) {
+        const r = resolveTransit(rec, this.network);
+        if (f.station && r.stationName) {
+          html += '<br><span class="tip-sub">站点: ' + escapeHtml(r.stationName) + '</span>';
+        }
+        if (f.route && r.routeName) {
+          let line = '线路: ' + escapeHtml(r.routeName);
+          if (r.fromName && r.toName) line += ' ' + escapeHtml(r.fromName) + ' → ' + escapeHtml(r.toName);
+          html += '<br><span class="tip-sub">' + line + '</span>';
+        }
+      }
+    }
+    return html || '<span class="tip-sub">（tooltip 栏目已全部关闭）</span>';
+  },
+
+  /** 切换 tooltip 栏目显示（持久化到 localStorage，强制所有 tooltip 重算） */
+  setTipField(field, on) {
+    if (!this.tipFields) this.tipFields = Object.assign({}, DEFAULT_TIP_FIELDS);
+    this.tipFields[field] = !!on;
+    try {
+      localStorage.setItem('mc-replay.tipFields', JSON.stringify(this.tipFields));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) track.tipHTML = null; // 内容强制重算
+    this.render();
   },
 
   /**

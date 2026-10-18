@@ -11,6 +11,7 @@ import (
 var knownConfigKeys = []string{
 	"mtr_url",
 	"squaremap_url",
+	"mirror_url",
 	"tile_url_template",
 	"default_world",
 	"default_tile_zoom",

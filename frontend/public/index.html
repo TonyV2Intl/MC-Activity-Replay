@@ -59,6 +59,14 @@
         <label><input type="radio" name="live-speed-mode" value="3"> 三点平均</label>
         <span class="hint">根据相邻两次刷新的坐标差推算（格/秒）</span>
       </div>
+      <div class="form-row inline check-group">
+        <span>卡片显示：</span>
+        <label><input type="checkbox" class="live-field" value="coords" checked> 坐标</label>
+        <label><input type="checkbox" class="live-field" value="speed" checked> 速度</label>
+        <label><input type="checkbox" class="live-field" value="station" checked> 站点</label>
+        <label><input type="checkbox" class="live-field" value="route" checked> 线路</label>
+        <span class="hint">名字与头像始终显示（偏好记忆在浏览器本地）</span>
+      </div>
       <div class="live-grid" id="live-players">
         <span class="hint">未在记录中</span>
       </div>
@@ -105,6 +113,12 @@
       <div class="form-row">
         <label>Squaremap API URL</label>
         <input type="text" id="cfg-squaremap-url">
+        <span class="hint">采集时拉取玩家坐标的上游地址（新建会话时写入会话记录）</span>
+      </div>
+      <div class="form-row">
+        <label>瓦片镜像 URL</label>
+        <input type="text" id="cfg-mirror-url" placeholder="留空 = 回放与采集使用相同地址">
+        <span class="hint">仅影响回放瓦片：设置后回放改从该镜像加载瓦片（采集仍使用上方 Squaremap API URL），适用于内外网分离/瓦片服务器变更的场景；配合「瓦片经服务器代理」可让浏览器全程只访问本系统</span>
       </div>
       <div class="form-row">
         <label>瓦片最大缩放等级（zoom.max）</label>

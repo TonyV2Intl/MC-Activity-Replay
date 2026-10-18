@@ -28,6 +28,18 @@
           <label><input type="radio" name="speed-mode" value="2"> 最新两点</label>
           <label><input type="radio" name="speed-mode" value="3"> 三点平均</label>
         </div>
+        <div class="check-group" title="选择 tooltip 中显示的栏目（偏好记忆在浏览器本地）">
+          <span>tooltip 显示：</span>
+          <label><input type="checkbox" class="tip-field" value="name" checked> 名字</label>
+          <label><input type="checkbox" class="tip-field" value="coords" checked> 坐标</label>
+          <label><input type="checkbox" class="tip-field" value="speed" checked> 速度</label>
+          <label><input type="checkbox" class="tip-field" value="station" checked> 站点</label>
+          <label><input type="checkbox" class="tip-field" value="route" checked> 线路</label>
+        </div>
+        <div class="check-group" title="浏览器无法直连瓦片服务器（跨域/内网/防火墙）时，让瓦片经本系统服务器中转下载">
+          <label><input type="checkbox" id="check-tile-proxy"> <span>瓦片经服务器代理</span></label>
+          <span class="hint" id="tile-source-hint"></span>
+        </div>
         <div class="hint" style="margin-top: 4px;">
           点击「跟随」使画面中心锁定该玩家移动，拖动地图或再次点击可取消
         </div>
