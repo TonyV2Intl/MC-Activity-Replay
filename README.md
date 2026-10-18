@@ -9,12 +9,12 @@
 - **手动记录控制**：单会话记录，随时开始/停止，支持最长时长上限
 - **双上游轮询**：默认 1 秒轮询 MTR 客户端 API 与 Squaremap players.json，1 秒精度回放
 - **数据清洗**：MTR 缓存去重（cachedResponseTime）、完全相同的重复位置不写入
-- **网页回放**：多玩家同时回放、变速播放（1x–32x）、逐点步进、进度条拖动跳转、画面中心跟随指定玩家、玩家名字常显/悬停显示、当前坐标/站点/线路（MTR）工具提示、超 1000 格跳跃段虚线连接
+- **网页回放**：多玩家同时回放、变速播放（1x–32x）、逐点步进、进度条拖动跳转、画面中心跟随指定玩家、玩家名字常显/悬停显示、当前坐标/站点/线路（MTR）/推算速度工具提示、超 1000 格跳跃段虚线连接
 - **瓦片地图**：Squaremap 瓦片 + Leaflet，方块坐标精确对齐（见下文“瓦片坐标转换”）
 - **玩家头像**：MCHeads 头像标记，按真实 Minecraft yaw 旋转
 - **录屏导出**：录制模式隐藏全部 UI，仅留地图与时间戳，停止后自动下载 webm
-- **会话管理**：重命名、删除、合并（时间段重叠拒绝）、JSON/CSV/数据库级导入导出
-- **实时监控**：记录中实时查看在线玩家（坐标、当前 MTR 站点/线路）与最近错误日志
+- **会话管理**：重命名、删除、合并（时间段重叠拒绝）、单次会话 JSON/CSV 导入、JSON/CSV/数据库级导出
+- **实时监控**：记录中实时查看在线玩家（坐标、当前 MTR 站点/线路、推算速度）与最近错误日志；刷新间隔跟随轮询间隔，未记录时可手动刷新
 
 ## 快速开始
 
@@ -80,7 +80,7 @@ docker compose down
 | `INITIAL_ADMIN_PASSWORD` | `admin` | 初始管理员密码 |
 | `SESSION_SECRET` | `change-me-in-production` | Session 签名密钥，生产环境请改为随机字符串 |
 
-其余配置（上游 API 地址、轮询间隔、瓦片参数等）在控制台“系统配置”页面中修改，存储于数据库，重启后保留。
+其余配置（上游 API 地址、轮询间隔、瓦片缩放级别等）在控制台“系统配置”页面中修改，存储于数据库，重启后保留。世界名与瓦片 URL 模板固定为系统默认值（`minecraft_overworld` 与 `/tiles/{world}/{zoom}/{x}_{z}.png`），不再提供配置项。
 
 ## 系统架构
 
@@ -154,7 +154,7 @@ mc-activity-replay/
 | GET | `/api/sessions/:id` | 会话详情 |
 | DELETE | `/api/sessions/:id` | 删除会话 |
 | POST | `/api/sessions/merge` | 合并会话（时间段重叠拒绝） |
-| POST | `/api/sessions/import` | 导入会话（JSON） |
+| POST | `/api/sessions/import` | 导入单次会话（JSON 或 CSV，multipart 上传） |
 | GET | `/api/sessions/:id/players` | 会话内玩家列表 |
 | GET | `/api/sessions/:id/players/:uuid/trajectory?chunk=0&chunkSize=2000` | 轨迹分页 |
 | GET | `/api/sessions/:id/players/:uuid/transit` | MTR 乘坐状态变化记录 |
@@ -190,19 +190,24 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 
 画面跟随：`render()` 每帧渲染结束后，若 `followUuid` 非空则取该玩家标记的 `getLatLng()` 调用 `map.panTo(..., {animate: false})` 使其保持居中（播放、拖动进度条、步进时均生效）；地图 `dragstart` 事件触发即自动取消跟随（`panTo` 不触发该事件，不会自我取消）；取消勾选或移除被跟随玩家轨迹时同步清除跟随状态。
 
-玩家名 tooltip：多点轨迹（TrackPlayer 标记）与单点轨迹统一通过 `bindPlayerTooltip()` 绑定，内容为按玩家专属颜色着色的名字（HTML 转义防注入）。`permanent` 行为由 Leaflet 在 `bindTooltip` 时决定（常显则立即 `openTooltip`，否则绑定 mouseover/mouseout），因此「常显玩家名字」开关切换时先 `unbindTooltip` 再重新 `bindTooltip`；偏好持久化在 localStorage（`mc-replay.tooltipPermanent`）。tooltip 还包含：当前坐标（由标记位置经 `latLngToBlock()` 逆换算为方块坐标取整显示，随播放逐帧更新）、当前时刻的 MTR 站点名与线路名（仅显示名称，不显示 ID）。
+玩家名 tooltip：多点轨迹（TrackPlayer 标记）与单点轨迹统一通过 `bindPlayerTooltip()` 绑定，内容为按玩家专属颜色着色的名字（HTML 转义防注入）。`permanent` 行为由 Leaflet 在 `bindTooltip` 时决定（常显则立即 `openTooltip`，否则绑定 mouseover/mouseout），因此「常显玩家名字」开关切换时先 `unbindTooltip` 再重新 `bindTooltip`；偏好持久化在 localStorage（`mc-replay.tooltipPermanent`）。tooltip 还包含：当前坐标（由标记位置经 `latLngToBlock()` 逆换算为方块坐标取整显示，随播放逐帧更新）、当前时刻的 MTR 站点名与线路名（仅显示名称，不显示 ID）、当前推算速度。
 
 跳跃段虚线：`buildTrack()` 计算相邻两点方块距离 `√(Δx²+Δz²)`，超过 1000 格的段判定为跳跃段（传送/重连导致的位置跳变）。连续同属性段合并为 run，每个 run 建两条自建 polyline（走过=玩家色、未走=半透明白，跳跃段加 `dashArray`）；TrackPlayer 自带的 passed/notPassed 线设 `opacity: 0` 隐藏（箭头装饰不受影响仍沿轨迹绘制）。`render()` 中按 `D = e·total` 与各 run 的 `cumStart/cumEnd` 比较得到 未开始/部分走过/已走过 三态，仅在状态或拆分位置变化时 `setLatLngs`（1e-9 容差避免重复渲染）。
 
+速度推算：`api.js` 的 `calcSpeed(pts, mode)` 按前后坐标点推算瞬时速度（单位：格/秒），回放与控制台实时监控共用。模式由用户在页面上单选（localStorage 记忆）：**两点**取最新两个相邻点位移/时差，**三点**取最新三个点首末总位移/总时差（平均速度，抗单点抖动）。回放侧 `speedAtTrack()` 从当前播放位置取轨迹点序列；控制台侧按每次轮询快照的 `polledAt` 为时间戳维护每玩家最近 3 个点的历史队列。点数不足（回放开头/单点轨迹）或时差为 0 时不显示速度行。
+
 乘坐状态：采集轮询将 MTR 客户端 API 的 `stationId`/`routeId`/`routeStationId1`/`routeStationId2` 按状态变化写入 `player_transit_state` 表；回放时 `GET /api/sessions/:id/players/:uuid/transit` 返回该玩家的状态变化序列，前端 `transitAt()` 二分定位当前时刻状态并由 `tooltipHTML()` 组装进工具提示（`render()` 中仅内容变化时调用 `setTooltipContent`）。站点/线路 ID → 名称由 `GET /api/network/names` 提供：后端由配置的 `mtr_url` 推导出 `stations-and-routes` 上游地址（路径 `clients` 段替换），拉取后内存缓存 10 分钟，多语言名称取第一个非空段；上游不可用时前端回退为显示原始 ID。控制台实时监控（`GET /api/collector/live`）同样返回每位玩家的乘坐状态字段，与回放共用 `api.js` 的 `resolveTransit()` 解析名称后展示坐标/站点/线路。
+
+实时监控刷新：面板定时器间隔与记录时的轮询间隔保持一致（取 `GET /api/collector/status` 的 `pollInterval`，变化时自动重建定时器，下限 200ms）；标题旁显示「每 Xms 刷新 · 更新于 …」。**未开始记录时停止自动轮询**，改为提供「刷新」按钮手动拉取最后一次快照（`GET /api/collector/live` 在停止录制后仍保留最后的玩家列表，见 `collector.go` 的 `Live()` 条件 `livePolledAt != nil`）；提示文案相应变为「未在记录 · 自动刷新已停止 …」。
 
 ## 使用说明
 
-1. **开始记录**：控制台点击“开始记录”，可配置上游 URL、轮询间隔（默认 1s）、最长时长。记录期间可在“实时监控”查看在线玩家与错误。
+1. **开始记录**：控制台点击“开始记录”，可配置上游 URL、轮询间隔（默认 1s）、最长时长。记录期间可在“实时监控”查看在线玩家与错误；监控刷新间隔与轮询间隔保持一致，未开始记录时可用面板上的「刷新」按钮手动查看最后一次快照。
 2. **查看会话**：“会话管理”列出所有会话（玩家数 / 轨迹点数 / 时间段 / 停止原因），支持重命名、删除、合并、导出。
-3. **回放**：点击会话进入回放页，勾选玩家加载轨迹（分块并行加载），使用播放控制进行播放/暂停/变速/步进/拖动跳转。点击玩家行的「跟随」按钮可让画面中心锁定该玩家移动（未加载轨迹时会自动加载），拖动地图或再次点击取消。勾选「常显玩家名字」后所有头像旁常显玩家名（按玩家专属颜色着色），关闭时仅鼠标悬停显示；该偏好记忆在浏览器本地。工具提示还会随回放进度显示该玩家当前坐标与所处的 MTR 站点/线路名称。相邻数据点间移动超过 1000 格（传送/重连）的轨迹段以虚线绘制。
+3. **回放**：点击会话进入回放页，勾选玩家加载轨迹（分块并行加载），使用播放控制进行播放/暂停/变速/步进/拖动跳转。点击玩家行的「跟随」按钮可让画面中心锁定该玩家移动（未加载轨迹时会自动加载），拖动地图或再次点击取消。勾选「常显玩家名字」后所有头像旁常显玩家名（按玩家专属颜色着色），关闭时仅鼠标悬停显示；该偏好记忆在浏览器本地。工具提示还会随回放进度显示该玩家当前坐标、所处的 MTR 站点/线路名称与推算速度；「速度采样」单选组可选择按最新两点还是最新三点推算速度（偏好记忆在浏览器本地）。相邻数据点间移动超过 1000 格（传送/重连）的轨迹段以虚线绘制。
 4. **录制视频**：点击“进入录制模式”（自动弹出录屏源选择，请选择“当前标签页”），回放结束后点击“停止录制”，自动下载 webm 文件。按 Esc 可退出录制模式。
 5. **数据库备份**：控制台“数据库”区域点击“导出数据库”下载全库数据快照；点击“导入数据库”选择快照文件恢复。
+6. **导入单次会话**：控制台“数据库导入导出”区域点击“导入单次会话（JSON/CSV）”，选择文件后追加导入一次会话（不清空现有数据）。JSON 为「导出会话 JSON」的结构（version=1，含完整玩家轨迹与乘坐状态）；CSV 为「导出会话 CSV」的宽表格式（`time,player_uuid,player_name,x,z,yaw,station_id,route_id`），后端按玩家分组还原轨迹，连续相同的 (station_id, route_id) 按状态变化去重为乘坐记录，会话元数据由数据推导（名称取文件名、起止时间取首末点、轮询间隔取相邻点间隔中位数，URL/世界/瓦片取当前配置或系统默认值）。
 
 ## 数据库导入导出
 
@@ -210,6 +215,19 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 - **导入**：`POST /api/database/import` 上传快照文件，后端将**删除并重建数据库**（DROP/CREATE DATABASE）、按 `init.sql` 重建表结构（hypertable / 压缩策略）、TRUNCATE 后通过 psql 执行快照。导入前请确保未在记录中（采集中会拒绝导入）。
 
 > 实现说明：TimescaleDB 的 hypertable 数据存放在内部 schema 的分片表中，`pg_dump --data-only` 对父表 COPY 输出为 0 行，且 `pg_dump --clean` 的 DDL 无法直接恢复到 hypertable 上。因此导出改为通过服务端 `COPY (SELECT ...) TO STDOUT` 经父表读出全部行；导入采用"删库重建 + 结构迁移 + 快照回放"策略（见 `backend/api/export.go` 与 `backend/db/db.go`）。
+
+## 单次会话导入（JSON/CSV）
+
+`POST /api/sessions/import` 以 `multipart/form-data`（字段名 `file`）上传**一次会话**的数据，追加导入、不清空现有数据。按扩展名/Content-Type 分流：
+
+- **JSON**（`GET /api/sessions/:id/export` 的产物，`version=1`）：完整还原会话元数据、全部玩家轨迹点与乘坐状态变化（含 `routeStationId1/2` 起终点字段）。
+- **CSV**（`GET /api/sessions/:id/export?format=csv` 的产物，宽表 `time,player_uuid,player_name,x,z,yaw,station_id,route_id`）：每行一个数据点，`time` 为 RFC3339（可带小数秒，亚秒精度保证同一秒内多点与状态变化的顺序，导入往返无损），`station_id/route_id` 为该时刻最新乘坐状态（由导出端 LATERAL 关联生成，空表示未乘车）。导入时（见 `parseSessionCSV`）：
+  - 按 `player_uuid` 分组还原每玩家轨迹点序列（保持时间排序）；
+  - 连续相同的 `(station_id, route_id)` 按「状态变化才记录」去重为 `player_transit_state` 行，与采集器语义一致；
+  - 会话元数据推导：名称 `导入_<文件名>`、起止时间取首末点、轮询间隔取相邻点间隔中位数（钳制 50ms–600s），`mtr_url/squaremap_url` 取当前配置，世界名与瓦片 URL 模板取系统默认值；
+  - 已知限制：CSV 宽表不携带 `routeStationId1/2`，导入后回放工具提示的线路起止方向（`A → B`）不显示，仅显示线路名。
+
+导入成功后返回 `{ok, sessionId, name}`，前端刷新会话列表。
 
 ## 构建说明
 

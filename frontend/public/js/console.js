@@ -5,21 +5,42 @@
 const consolePage = {
   statusTimer: null,
   liveTimer: null,
+  liveIntervalMs: null, // 实时监控自动刷新间隔（跟随记录轮询间隔；0 = 已停止自动刷新）
+  recording: false, // 是否正在记录（决定实时监控自动刷新/手动刷新）
 
   // MTR 站线名称表（ID → 名称，来自 /api/network/names；未加载时为 null，回退原始 ID）
   network: null,
+
+  // 速度推算：'2' = 最新两点，'3' = 三点平均（localStorage 持久化）
+  speedMode: '2',
+  speedHistory: new Map(), // uuid -> [{x, z, t}]（t 取后端 polledAt，最多保留 3 个）
 
   init() {
     this.refreshStatus();
     this.loadConfig();
     this.statusTimer = setInterval(() => this.refreshStatus(), 2000);
-    this.liveTimer = setInterval(() => this.refreshLive(), 2000);
+    this.setLiveInterval(2000); // status 就绪前先用 2s，之后按轮询间隔自动调整
 
     // MTR 站线名称表：后台加载不阻塞控制台渲染（上游响应约 2MB，
     // 慢速链路下可达数分钟）；就绪前实时监控的站点/线路回退显示原始 ID
     api('/network/names')
       .then((n) => { this.network = { stations: n.stations || {}, routes: n.routes || {} }; })
       .catch(() => { /* 忽略 */ });
+
+    // 速度推算模式（localStorage，跨会话保持）
+    try {
+      this.speedMode = localStorage.getItem('mc-console.speedMode') || '2';
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    const radios = document.querySelectorAll('input[name="live-speed-mode"]');
+    radios.forEach((r) => {
+      r.checked = r.value === this.speedMode;
+      r.addEventListener('change', () => {
+        if (!r.checked) return;
+        this.speedMode = r.value;
+        try { localStorage.setItem('mc-console.speedMode', r.value); } catch (e) { /* 忽略 */ }
+        this.refreshLive();
+      });
+    });
 
     document.getElementById('select-filter-mode').addEventListener('change', e => {
       document.getElementById('filter-inputs').style.display =
@@ -53,9 +74,49 @@ const consolePage = {
 
       // 错误日志
       this.renderErrors(st.errors || []);
-      if (recording) this.refreshLive();
+      this.recording = recording;
+      if (recording) {
+        this.refreshLive();
+        // 实时监控刷新间隔与记录轮询间隔保持一致
+        const iv = st.pollInterval || (this.cfg && Number(this.cfg.default_poll_interval_ms)) || 2000;
+        this.setLiveInterval(iv);
+      } else {
+        // 未开始记录：停止自动刷新，改用面板上的「刷新」按钮手动查看最后快照
+        this.setLiveInterval(0);
+      }
     } catch (e) {
       document.getElementById('collector-badge').textContent = 'IDLE';
+    }
+  },
+
+  /** 设置实时监控自动刷新间隔（仅在变化时重建定时器）；传 0 表示停止自动刷新 */
+  setLiveInterval(ms) {
+    if (!ms || Number(ms) <= 0) {
+      this.liveIntervalMs = 0;
+      if (this.liveTimer) { clearInterval(this.liveTimer); this.liveTimer = null; }
+      this.updateLiveHint(null);
+      return;
+    }
+    ms = Math.max(200, Number(ms) || 2000);
+    if (this.liveIntervalMs === ms) return;
+    this.liveIntervalMs = ms;
+    if (this.liveTimer) clearInterval(this.liveTimer);
+    this.liveTimer = setInterval(() => this.refreshLive(), ms);
+    this.updateLiveHint(null);
+  },
+
+  /** 更新实时监控标题旁的间隔/更新时间提示 */
+  updateLiveHint(live) {
+    const hint = document.getElementById('live-interval-hint');
+    if (!hint) return;
+    if (this.recording) {
+      const at = live && live.polledAt ? ' · 更新于 ' + fmtTime(live.polledAt) : '';
+      hint.textContent = '每 ' + this.liveIntervalMs + 'ms 刷新' + at;
+    } else if (live && live.sessionId) {
+      const at = live.polledAt ? ' · 快照更新于 ' + fmtTime(live.polledAt) : '';
+      hint.textContent = '未在记录 · 自动刷新已停止' + at;
+    } else {
+      hint.textContent = '未在记录 · 自动刷新已停止，点击「刷新」查看最后快照';
     }
   },
 
@@ -78,14 +139,33 @@ const consolePage = {
       const el = document.getElementById('live-players');
       if (!live.sessionId || !live.players || !live.players.length) {
         el.innerHTML = '<span class="hint">未在记录中</span>';
+        this.updateLiveHint(null);
         return;
       }
+      // 记录坐标历史用于速度推算（时间戳取后端 polledAt，与采集时刻一致；
+      // 同一 polledAt 的重复刷新不重复记点）
+      const t = live.polledAt ? new Date(live.polledAt).getTime() : Date.now();
+      for (const p of live.players) {
+        let hist = this.speedHistory.get(p.uuid);
+        if (!hist) { hist = []; this.speedHistory.set(p.uuid, hist); }
+        const lastPt = hist[hist.length - 1];
+        if (!lastPt || lastPt.t !== t) {
+          hist.push({ x: p.x, z: p.z, t });
+          if (hist.length > 3) hist.shift();
+        }
+      }
+      this.updateLiveHint(live);
       el.innerHTML = live.players.map(p => {
         let html = '<div class="live-player">' +
           '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
           '<div class="info">' +
             '<div class="name">' + esc(p.name) + '</div>' +
             '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>';
+        // 速度推算（格/秒，按用户选择的两点/三点模式）
+        const speed = calcSpeed(this.speedHistory.get(p.uuid), this.speedMode);
+        if (speed != null) {
+          html += '<div class="transit">速度: ' + speed.toFixed(1) + ' 格/s</div>';
+        }
         // MTR 乘坐状态：站点 + 线路（仅显示名称；名称表未就绪时回退原始 ID）
         const r = resolveTransit({
           station: normTransitId(p.station_id),
@@ -166,8 +246,6 @@ const consolePage = {
       this.cfg = cfg; // 缓存，供 startRecording 读取瓦片最大缩放等级等默认值
       document.getElementById('cfg-mtr-url').value = cfg.mtr_url || '';
       document.getElementById('cfg-squaremap-url').value = cfg.squaremap_url || '';
-      document.getElementById('cfg-tile-template').value = cfg.tile_url_template || '';
-      document.getElementById('cfg-world').value = cfg.default_world || '';
       document.getElementById('cfg-tile-zoom').value = cfg.default_tile_zoom || 3;
     } catch (e) { /* 静默 */ }
   },
@@ -184,8 +262,6 @@ const consolePage = {
           config: {
             mtr_url: document.getElementById('cfg-mtr-url').value.trim(),
             squaremap_url: document.getElementById('cfg-squaremap-url').value.trim(),
-            tile_url_template: document.getElementById('cfg-tile-template').value.trim(),
-            default_world: document.getElementById('cfg-world').value.trim(),
             default_tile_zoom: document.getElementById('cfg-tile-zoom').value.trim(),
           },
         },
@@ -245,6 +321,37 @@ const consolePage = {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || ('导入失败 (' + res.status + ')'));
       alert('数据库导入成功');
+      sessionPage.refresh();
+    } catch (e) {
+      errEl.textContent = e.message;
+    }
+  },
+
+  // ---------- 单次会话导入（JSON/CSV） ----------
+
+  async importSession() {
+    const errEl = document.getElementById('session-import-error');
+    const okEl = document.getElementById('session-import-ok');
+    errEl.textContent = '';
+    okEl.textContent = '';
+    const fileInput = document.getElementById('session-import-file');
+    if (!fileInput.files || !fileInput.files.length) {
+      errEl.textContent = '请先选择 JSON 或 CSV 文件';
+      return;
+    }
+    const file = fileInput.files[0];
+    if (!/\.(json|csv)$/i.test(file.name)) {
+      errEl.textContent = '仅支持 .json 或 .csv 文件';
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/sessions/import', { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('导入失败 (' + res.status + ')'));
+      okEl.textContent = '已导入会话「' + (data.name || file.name) + '」（ID ' + data.sessionId + '）';
+      fileInput.value = '';
       sessionPage.refresh();
     } catch (e) {
       errEl.textContent = e.message;

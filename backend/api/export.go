@@ -2,15 +2,20 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -201,7 +206,7 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
 			return
 		}
 		w.Write([]string{
-			t.UTC().Format(time.RFC3339),
+			t.UTC().Format(time.RFC3339Nano), // 亚秒精度：同一秒内的多点/状态变化保持顺序，保证导入往返无损
 			uuid,
 			name,
 			strconv.FormatFloat(x, 'f', -1, 64),
@@ -227,12 +232,15 @@ func formatStringPtr(v *string) string {
 	return *v
 }
 
-// importSession 导入会话（JSON 格式，multipart/form-data）
+// importSession 导入会话（JSON 或 CSV 格式，multipart/form-data）。
+// JSON 为控制台「导出会话」产生的结构（version=1）；
+// CSV 为导出会话的宽表格式（time,player_uuid,player_name,x,z,yaw,station_id,route_id），
+// 按文件扩展名/Content-Type 区分，CSV 的会话元数据由数据推导。
 func importSession(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		file, _, err := c.Request.FormFile("file")
+		file, header, err := c.Request.FormFile("file")
 		if err != nil {
-			badRequest(c, "请上传 JSON 文件（字段名 file）")
+			badRequest(c, "请上传 JSON 或 CSV 文件（字段名 file）")
 			return
 		}
 		defer file.Close()
@@ -244,12 +252,20 @@ func importSession(database *db.DB) gin.HandlerFunc {
 		}
 
 		var data models.ExportJSON
-		if err := json.Unmarshal(body, &data); err != nil {
-			badRequest(c, "JSON 解析失败: "+err.Error())
-			return
+		if isCSVUpload(header) {
+			data, err = parseSessionCSV(body, header.Filename, database)
+			if err != nil {
+				badRequest(c, "CSV 解析失败: "+err.Error())
+				return
+			}
+		} else {
+			if err := json.Unmarshal(body, &data); err != nil {
+				badRequest(c, "JSON 解析失败: "+err.Error())
+				return
+			}
 		}
 		if data.Version != 1 || len(data.Players) == 0 {
-			badRequest(c, "无效的导出文件（version 必须为 1 且包含玩家数据）")
+			badRequest(c, "无效的导入文件（version 必须为 1 且包含玩家数据）")
 			return
 		}
 
@@ -290,8 +306,200 @@ func importSession(database *db.DB) gin.HandlerFunc {
 			serverError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "sessionId": newID})
+		c.JSON(http.StatusOK, gin.H{"ok": true, "sessionId": newID, "name": s.Name})
 	}
+}
+
+// isCSVUpload 按文件扩展名与 Content-Type 判断是否为 CSV 上传
+func isCSVUpload(header *multipart.FileHeader) bool {
+	if header == nil {
+		return false
+	}
+	if strings.HasSuffix(strings.ToLower(header.Filename), ".csv") {
+		return true
+	}
+	ct := header.Header.Get("Content-Type")
+	return strings.Contains(ct, "csv")
+}
+
+// csvImportRow CSV 宽表的一行
+type csvImportRow struct {
+	t       time.Time
+	uuid    string
+	name    string
+	x, z    float64
+	yaw     *float64
+	station string
+	route   string
+}
+
+// parseSessionCSV 解析导出的宽表 CSV 为 ExportJSON。
+// 会话元数据由数据推导：名称取文件名、起止时间取首末点、轮询间隔取相邻点间隔中位数，
+// URL/世界/瓦片模板取当前配置或系统默认值。乘坐状态按“状态变化才记录”去重
+// （同一玩家连续相同的 station/route 只保留首条），与采集器语义一致。
+func parseSessionCSV(body []byte, filename string, database *db.DB) (models.ExportJSON, error) {
+	reader := csv.NewReader(bytes.NewReader(body))
+	reader.FieldsPerRecord = -1 // 容忍末尾缺列
+	reader.TrimLeadingSpace = true
+	records, err := reader.ReadAll()
+	if err != nil {
+		return models.ExportJSON{}, fmt.Errorf("读取 CSV 失败: %w", err)
+	}
+	if len(records) == 0 {
+		return models.ExportJSON{}, fmt.Errorf("CSV 为空")
+	}
+
+	// 头部：至少 time,player_uuid,player_name,x,z,yaw；station_id/route_id 可选
+	header := records[0]
+	for i := range header {
+		header[i] = strings.TrimSpace(strings.TrimPrefix(header[i], "\ufeff"))
+	}
+	if len(header) < 6 || strings.ToLower(header[0]) != "time" {
+		return models.ExportJSON{}, fmt.Errorf("CSV 表头应为 time,player_uuid,player_name,x,z,yaw[,station_id,route_id]")
+	}
+	hasTransit := len(header) >= 8
+
+	var rows []csvImportRow
+	for _, rec := range records[1:] {
+		if len(rec) < 6 {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(rec[0]))
+		if err != nil {
+			return models.ExportJSON{}, fmt.Errorf("时间解析失败（应为 RFC3339，可带小数秒）: %q", rec[0])
+		}
+		x, err := strconv.ParseFloat(strings.TrimSpace(rec[3]), 64)
+		if err != nil {
+			return models.ExportJSON{}, fmt.Errorf("x 解析失败: %q", rec[3])
+		}
+		z, err := strconv.ParseFloat(strings.TrimSpace(rec[4]), 64)
+		if err != nil {
+			return models.ExportJSON{}, fmt.Errorf("z 解析失败: %q", rec[4])
+		}
+		var yaw *float64
+		if v := strings.TrimSpace(rec[5]); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				yaw = &f
+			}
+		}
+		var station, route string
+		if hasTransit {
+			station = strings.TrimSpace(rec[6])
+			route = strings.TrimSpace(rec[7])
+		}
+		rows = append(rows, csvImportRow{
+			t: t, uuid: strings.TrimSpace(rec[1]), name: strings.TrimSpace(rec[2]),
+			x: x, z: z, yaw: yaw, station: station, route: route,
+		})
+	}
+	if len(rows) == 0 {
+		return models.ExportJSON{}, fmt.Errorf("CSV 无数据行")
+	}
+
+	// 全局按时间排序（稳定），用于推导起止时间与轮询间隔
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].t.Before(rows[j].t) })
+
+	// 按玩家分组（保持出现顺序），乘坐状态去重
+	order := []string{}
+	players := map[string]*models.ExportPlayer{}
+	lastTransit := map[string]string{}
+	for _, r := range rows {
+		if r.uuid == "" {
+			continue
+		}
+		p, ok := players[r.uuid]
+		if !ok {
+			p = &models.ExportPlayer{UUID: r.uuid, Name: r.name}
+			players[r.uuid] = p
+			order = append(order, r.uuid)
+		}
+		if p.Name == "" {
+			p.Name = r.name
+		}
+		p.Activity = append(p.Activity, models.ActivityPoint{Time: r.t, X: r.x, Z: r.z, Yaw: r.yaw})
+		key := r.station + "\x00" + r.route
+		if key != lastTransit[r.uuid] {
+			lastTransit[r.uuid] = key
+			station, route := r.station, r.route
+			p.Transit = append(p.Transit, models.TransitRecord{
+				Time: r.t, StationID: &station, RouteID: &route,
+			})
+		}
+	}
+	if len(order) == 0 {
+		return models.ExportJSON{}, fmt.Errorf("CSV 中没有有效的玩家数据（player_uuid 为空）")
+	}
+
+	// 会话元数据推导
+	cfgMap := loadConfigMap(database)
+	tileZoom := 3
+	if v := strings.TrimSpace(cfgMap["default_tile_zoom"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			tileZoom = n
+		}
+	}
+	sess := models.Session{
+		Name:            importSessionName(filename),
+		StartedAt:       rows[0].t,
+		StoppedAt:       &rows[len(rows)-1].t,
+		PollIntervalMs:  medianIntervalMs(rows),
+		MtrURL:          cfgMap["mtr_url"],
+		SquaremapURL:    cfgMap["squaremap_url"],
+		World:           "minecraft_overworld", // 系统默认世界名
+		TileZoom:        tileZoom,
+		TileURLTemplate: "/tiles/{world}/{zoom}/{x}_{z}.png", // 系统默认瓦片模板
+	}
+
+	exportPlayers := make([]models.ExportPlayer, 0, len(order))
+	for _, uuid := range order {
+		exportPlayers = append(exportPlayers, *players[uuid])
+	}
+	return models.ExportJSON{Version: 1, Session: sess, Players: exportPlayers}, nil
+}
+
+// importSessionName 由上传文件名生成会话名（去目录与扩展名，过滤非法字符）
+func importSessionName(filename string) string {
+	base := filepath.Base(strings.TrimSpace(filename))
+	if ext := filepath.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	base = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(`/\?%*:|"<>`, r) {
+			return '_'
+		}
+		return r
+	}, base)
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "会话"
+	}
+	return "导入_" + base
+}
+
+// medianIntervalMs 相邻点时间间隔的中位数（毫秒），作为导入会话的轮询间隔
+func medianIntervalMs(rows []csvImportRow) int {
+	const fallback = 1000
+	if len(rows) < 2 {
+		return fallback
+	}
+	diffs := make([]int, 0, len(rows)-1)
+	for i := 1; i < len(rows); i++ {
+		if d := int(rows[i].t.Sub(rows[i-1].t).Milliseconds()); d > 0 {
+			diffs = append(diffs, d)
+		}
+	}
+	if len(diffs) == 0 {
+		return fallback
+	}
+	sort.Ints(diffs)
+	m := diffs[len(diffs)/2]
+	if m < 50 {
+		m = 50
+	}
+	if m > 600000 {
+		m = 600000
+	}
+	return m
 }
 
 func copyActivity(ctx context.Context, tx pgx.Tx, sessionID int64, uuid, name string, points []models.ActivityPoint) error {

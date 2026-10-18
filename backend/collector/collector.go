@@ -40,8 +40,9 @@ type Collector struct {
 	errors       []models.ErrorEntry
 
 	// 最近一次轮询结果（供 /api/collector/live）
-	livePlayers  []models.LivePlayer
-	livePolledAt *time.Time
+	livePlayers    []models.LivePlayer
+	livePolledAt   *time.Time
+	liveSessionID  int64 // 快照所属会话 ID（Stop 不清除，保证停止后仍可返回有效快照）
 
 	// 轮询协程控制通道（仅 Start/Stop 访问）
 	stopCh   chan struct{}
@@ -309,13 +310,13 @@ func (c *Collector) Live() models.CollectorLive {
 	live := models.CollectorLive{
 		Players: append([]models.LivePlayer(nil), c.livePlayers...),
 	}
-	if c.status == StatusRecording {
-		id := c.sessionID
+	// 录制中返回当前会话 ID；停止后若仍有上次轮询快照也一并返回，
+	// 使控制台在未记录状态下手动刷新也能看到最后的玩家列表
+	if c.livePolledAt != nil {
+		id := c.liveSessionID
 		live.SessionID = &id
-		if c.livePolledAt != nil {
-			t := *c.livePolledAt
-			live.PolledAt = &t
-		}
+		t := *c.livePolledAt
+		live.PolledAt = &t
 	}
 	return live
 }
@@ -351,10 +352,11 @@ func (c *Collector) addError(msg string) {
 }
 
 // setLive 更新最近一次轮询结果
-func (c *Collector) setLive(players []models.LivePlayer) {
+func (c *Collector) setLive(players []models.LivePlayer, sessionID int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.livePlayers = players
+	c.liveSessionID = sessionID
 	now := time.Now().UTC()
 	c.livePolledAt = &now
 	c.playerCount = len(players)

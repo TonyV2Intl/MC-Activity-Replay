@@ -207,6 +207,20 @@ table.data tr.clickable { cursor: pointer; }
 .live-player .coords { color: var(--text-dim); font-size: 12px; font-family: ui-monospace, monospace; }
 .live-player .transit { color: var(--text-dim); font-size: 12px; }
 
+/* 速度推算模式选择（回放页与控制台实时监控共用） */
+.speed-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.speed-mode label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
+.panel-head { display: flex; align-items: center; gap: 10px; }
+.panel-head h2 { margin: 0; }
+
 /* ---------- 错误日志 ---------- */
 .error-log {
   max-height: 180px;

@@ -23,6 +23,11 @@
           <input type="checkbox" id="check-tooltip-permanent">
           <span>常显玩家名字</span>
         </label>
+        <div class="speed-mode" title="根据前后坐标点推算移动速度，显示在 tooltip 中">
+          <span>速度推算：</span>
+          <label><input type="radio" name="speed-mode" value="2"> 最新两点</label>
+          <label><input type="radio" name="speed-mode" value="3"> 三点平均</label>
+        </div>
         <div class="hint" style="margin-top: 4px;">
           点击「跟随」使画面中心锁定该玩家移动，拖动地图或再次点击可取消
         </div>

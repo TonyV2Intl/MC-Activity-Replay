@@ -47,7 +47,18 @@
 
     <!-- 2. 实时监控区 -->
     <div class="panel">
-      <h2>实时监控（每 2 秒刷新）</h2>
+      <div class="panel-head">
+        <h2>实时监控</h2>
+        <span class="hint" id="live-interval-hint"></span>
+        <span class="spacer"></span>
+        <button class="small" id="btn-live-refresh" onclick="consolePage.refreshLive()">刷新</button>
+      </div>
+      <div class="form-row inline speed-mode">
+        <span>速度推算：</span>
+        <label><input type="radio" name="live-speed-mode" value="2"> 最新两点</label>
+        <label><input type="radio" name="live-speed-mode" value="3"> 三点平均</label>
+        <span class="hint">根据相邻两次刷新的坐标差推算（格/秒）</span>
+      </div>
       <div class="live-grid" id="live-players">
         <span class="hint">未在记录中</span>
       </div>
@@ -96,14 +107,6 @@
         <input type="text" id="cfg-squaremap-url">
       </div>
       <div class="form-row">
-        <label>瓦片 URL 模板</label>
-        <input type="text" id="cfg-tile-template">
-      </div>
-      <div class="form-row">
-        <label>默认世界名</label>
-        <input type="text" id="cfg-world">
-      </div>
-      <div class="form-row">
         <label>瓦片最大缩放等级（zoom.max）</label>
         <input type="number" id="cfg-tile-zoom" min="0" max="10" style="max-width: 100px;">
         <span class="hint">须与 Squaremap 服务器 settings.json 的 zoom.max 一致，改错会导致回放瓦片坐标错位；新建会话时作为默认值写入</span>
@@ -138,7 +141,14 @@
         <button class="danger" onclick="consolePage.importDatabase()">导入数据库</button>
         <span class="hint">导出为全库数据快照；导入将清空当前数据并从快照重建，请谨慎操作</span>
       </div>
+      <div class="form-row">
+        <input type="file" id="session-import-file" accept=".json,.csv" style="max-width: 320px;">
+        <button onclick="consolePage.importSession()">导入单次会话（JSON/CSV）</button>
+        <span class="hint">导入一次会话数据（不清空现有数据）；JSON 为「导出会话 JSON」，CSV 为「导出会话 CSV」的宽表格式（time,player_uuid,player_name,x,z,yaw,station_id,route_id）</span>
+      </div>
       <div class="error-text" id="db-error"></div>
+      <div class="ok-text" id="session-import-ok"></div>
+      <div class="error-text" id="session-import-error"></div>
     </div>
 
     <!-- 7. 日志/错误区 -->

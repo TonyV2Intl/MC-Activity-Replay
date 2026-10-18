@@ -170,7 +170,7 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 			RS2:     p.RS2,
 		})
 	}
-	c.setLive(live)
+	c.setLive(live, sessionID)
 }
 
 // mergePlayers 以 Squaremap 为基准合并 MTR 数据

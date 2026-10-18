@@ -111,6 +111,26 @@ function resolveTransit(rec, network) {
   };
 }
 
+/**
+ * 速度推算（回放 tooltip 与控制台实时监控共用），单位：格/秒。
+ * @param {Array<{x:number,z:number,t:number}>} pts 按时间升序的坐标点（t 为 ms epoch）
+ * @param {string} mode '2' = 最新两点位移/时差；'3' = 最新三点（首末）位移/总时差（平均速度）
+ * @returns {number|null} 点数不足或时差为 0 时返回 null
+ */
+function calcSpeed(pts, mode) {
+  if (!pts || pts.length < 2) return null;
+  const last = pts[pts.length - 1];
+  let first;
+  if (mode === '3' && pts.length >= 3) {
+    first = pts[pts.length - 3];
+  } else {
+    first = pts[pts.length - 2];
+  }
+  const dt = (last.t - first.t) / 1000; // 秒
+  if (dt <= 0) return null;
+  return Math.hypot(last.x - first.x, last.z - first.z) / dt;
+}
+
 /** 显示错误信息到指定元素 */
 function showError(el, msg) {
   if (!el) return;

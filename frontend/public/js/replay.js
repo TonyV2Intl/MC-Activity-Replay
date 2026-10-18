@@ -60,6 +60,7 @@ const replayPage = {
 
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
+  speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
 
   // MTR 站线名称表（ID → 名称，来自 /api/network/names；加载失败时为 null）
   network: null,
@@ -74,9 +75,10 @@ const replayPage = {
     }
     this.sessionId = id;
 
-    // 读取「常显玩家名字」偏好（localStorage，跨会话保持）
+    // 读取「常显玩家名字」偏好与速度推算模式（localStorage，跨会话保持）
     try {
       this.tooltipPermanent = localStorage.getItem('mc-replay.tooltipPermanent') === '1';
+      this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
     } catch (e) { /* 隐私模式等场景忽略 */ }
 
     try {
@@ -165,6 +167,15 @@ const replayPage = {
       tipCb.checked = this.tooltipPermanent;
       tipCb.addEventListener('change', () => this.setTooltipPermanent(tipCb.checked));
     }
+
+    // 速度推算模式（持久化到 localStorage，切换后强制刷新所有 tooltip）
+    const speedRadios = document.querySelectorAll('input[name="speed-mode"]');
+    speedRadios.forEach((r) => {
+      r.checked = r.value === this.speedMode;
+      r.addEventListener('change', () => {
+        if (r.checked) this.setSpeedMode(r.value);
+      });
+    });
 
     Recorder.onStateChange = (recording) => {
       const btn = document.getElementById('btn-record');
@@ -313,6 +324,38 @@ const replayPage = {
     }
   },
 
+  /** 切换速度推算模式（持久化到 localStorage，强制所有 tooltip 重算） */
+  setSpeedMode(mode) {
+    this.speedMode = mode;
+    try {
+      localStorage.setItem('mc-replay.speedMode', mode);
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) track.tipHTML = null; // 内容强制重算
+    this.render();
+  },
+
+  /**
+   * 当前时刻的移动速度（格/s）。
+   * '2' = 当前区间 [i, i+1] 两点位移/时差；'3' = 前三 [i-1, i+1] 点总位移/总时差（平均速度）。
+   * 复用共享 calcSpeed；点数不足（单点轨迹/区间起点）时自动退化为两点模式。
+   */
+  speedAtTrack(track) {
+    const xs = track.xs, zs = track.zs, times = track.times;
+    if (!xs || xs.length < 2) return null;
+    const loc = this.locate(track, this.currentTime);
+    const i = loc.i;
+    const j = Math.min(i + 1, xs.length - 1);
+    if (j <= i) return null;
+    const pts = [
+      { x: xs[i], z: zs[i], t: times[i] },
+      { x: xs[j], z: zs[j], t: times[j] },
+    ];
+    if (this.speedMode === '3' && i >= 1) {
+      pts.unshift({ x: xs[i - 1], z: zs[i - 1], t: times[i - 1] });
+    }
+    return calcSpeed(pts, this.speedMode);
+  },
+
   /**
    * 二分查找时间 t 时玩家的 MTR 乘坐状态（最后一个 ≤ t 的记录）。
    * t 早于首条记录时返回 null（无状态信息）。
@@ -341,6 +384,11 @@ const replayPage = {
     if (marker) {
       const b = latLngToBlock(marker.getLatLng());
       html += '<br><span class="tip-sub">坐标: ' + Math.round(b.x) + ', ' + Math.round(b.z) + '</span>';
+    }
+    // 速度推算（格/s）
+    const v = this.speedAtTrack(track);
+    if (v != null && isFinite(v)) {
+      html += '<br><span class="tip-sub">速度: ' + v.toFixed(1) + ' 格/s</span>';
     }
     const rec = this.transitAt(track, this.currentTime);
     if (rec) {
