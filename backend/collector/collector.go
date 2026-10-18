@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,9 +130,19 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	if req.World != nil && *req.World != "" {
 		world = *req.World
 	}
+	// 瓦片最大缩放等级：请求未指定时回退到 app_config.default_tile_zoom，再回退到 3。
+	// 该值须与 Squaremap 服务器 settings.json 的 zoom.max 一致（回放坐标换算基准）。
 	tileZoom := 3
 	if req.TileZoom != nil {
 		tileZoom = *req.TileZoom
+	} else {
+		var cfgVal string
+		if err := c.db.Pool.QueryRow(ctx,
+			`SELECT value FROM app_config WHERE key = 'default_tile_zoom'`).Scan(&cfgVal); err == nil {
+			if n, convErr := strconv.Atoi(strings.TrimSpace(cfgVal)); convErr == nil && n >= 0 {
+				tileZoom = n
+			}
+		}
 	}
 	tileURLTemplate := "/tiles/{world}/{zoom}/{x}_{z}.png"
 	if req.TileURLTemplate != nil && *req.TileURLTemplate != "" {

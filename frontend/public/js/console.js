@@ -95,6 +95,9 @@ const consolePage = {
     if (maxDur) body.maxDurationSec = parseInt(maxDur, 10);
     const interval = document.getElementById('input-poll-interval').value.trim();
     if (interval) body.pollIntervalMs = parseInt(interval, 10);
+    // 瓦片最大缩放等级：取配置页的默认值（后端亦有同等的 app_config 回退）
+    const tileZoom = parseInt((this.cfg && this.cfg.default_tile_zoom) || '3', 10);
+    if (!isNaN(tileZoom) && tileZoom >= 0) body.tileZoom = tileZoom;
     const filterMode = document.getElementById('select-filter-mode').value;
     if (filterMode !== 'all') {
       const lines = document.getElementById('input-filter').value
@@ -139,6 +142,7 @@ const consolePage = {
     try {
       const data = await api('/config');
       const cfg = data.config || {};
+      this.cfg = cfg; // 缓存，供 startRecording 读取瓦片最大缩放等级等默认值
       document.getElementById('cfg-mtr-url').value = cfg.mtr_url || '';
       document.getElementById('cfg-squaremap-url').value = cfg.squaremap_url || '';
       document.getElementById('cfg-tile-template').value = cfg.tile_url_template || '';

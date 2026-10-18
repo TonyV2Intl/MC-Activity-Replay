@@ -102,8 +102,11 @@
       <div class="form-row">
         <label>默认世界名</label>
         <input type="text" id="cfg-world">
-        <label style="min-width: auto;">默认瓦片缩放</label>
+      </div>
+      <div class="form-row">
+        <label>瓦片最大缩放等级（zoom.max）</label>
         <input type="number" id="cfg-tile-zoom" min="0" max="10" style="max-width: 100px;">
+        <span class="hint">须与 Squaremap 服务器 settings.json 的 zoom.max 一致，改错会导致回放瓦片坐标错位；新建会话时作为默认值写入</span>
       </div>
       <div class="form-row">
         <button class="primary" onclick="consolePage.saveConfig()">保存配置</button>
