@@ -54,6 +54,7 @@ const replayPage = {
   pointTimes: [],           // 所有已加载轨迹点的去重时间戳（步进用）
 
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
+  tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
 
   /* ---------- 初始化 ---------- */
   async init() {
@@ -64,6 +65,11 @@ const replayPage = {
       return;
     }
     this.sessionId = id;
+
+    // 读取「常显玩家名字」偏好（localStorage，跨会话保持）
+    try {
+      this.tooltipPermanent = localStorage.getItem('mc-replay.tooltipPermanent') === '1';
+    } catch (e) { /* 隐私模式等场景忽略 */ }
 
     try {
       this.session = await api('/sessions/' + id);
@@ -135,6 +141,13 @@ const replayPage = {
       else if (e.code === 'ArrowRight') { e.preventDefault(); this.stepNext(); }
       else if (e.code === 'Escape' && this.recordingMode) { this.exitRecordingMode(); }
     });
+
+    // 常显玩家名字开关（偏好持久化到 localStorage）
+    const tipCb = document.getElementById('check-tooltip-permanent');
+    if (tipCb) {
+      tipCb.checked = this.tooltipPermanent;
+      tipCb.addEventListener('change', () => this.setTooltipPermanent(tipCb.checked));
+    }
 
     Recorder.onStateChange = (recording) => {
       const btn = document.getElementById('btn-record');
@@ -251,6 +264,38 @@ const replayPage = {
     }
   },
 
+  /* ---------- 玩家名 tooltip ---------- */
+
+  /**
+   * 绑定/刷新头像标记的玩家名 tooltip。
+   * permanent 行为由 Leaflet 在 bindTooltip 时决定（常显则立即打开，
+   * 否则绑定 mouseover/mouseout），因此切换时常显需先 unbind 再重新 bind。
+   */
+  bindPlayerTooltip(marker, track) {
+    if (!marker) return;
+    if (marker.getTooltip()) marker.unbindTooltip();
+    const html = '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
+    marker.bindTooltip(html, {
+      permanent: this.tooltipPermanent,
+      direction: 'top',
+      offset: [0, -20],
+      className: 'player-tooltip',
+      opacity: 1,
+    });
+    if (this.tooltipPermanent) marker.openTooltip();
+  },
+
+  /** 切换「常显玩家名字」（持久化到 localStorage，并刷新所有已加载轨迹） */
+  setTooltipPermanent(on) {
+    this.tooltipPermanent = !!on;
+    try {
+      localStorage.setItem('mc-replay.tooltipPermanent', this.tooltipPermanent ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) {
+      this.bindPlayerTooltip(track.tp ? track.tp.marker : track.marker, track);
+    }
+  },
+
   /**
    * 加载单个玩家完整轨迹（分块并行请求）。
    * 返回后若复选框已取消（竞态），立即移除。
@@ -350,8 +395,10 @@ const replayPage = {
     } else {
       // 单点轨迹：插件要求至少 2 个坐标，退化为普通头像标记
       track.marker = L.marker(latlngs[0], { icon }).addTo(this.map);
-      track.marker.bindTooltip(name, { direction: 'top', offset: [0, -14] });
     }
+
+    // 玩家名 tooltip：多点轨迹（TrackPlayer 标记）与单点轨迹统一处理
+    this.bindPlayerTooltip(track.tp ? track.tp.marker : track.marker, track);
 
     this.tracks.set(uuid, track);
 
@@ -651,6 +698,13 @@ function normalizeYawAngle(yaw) {
   let a = (180 + Number(yaw)) % 360;
   if (a < 0) a += 360;
   return a;
+}
+
+/** 转义 HTML 特殊字符（tooltip 内容为玩家名，需防止注入） */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
 /** ms epoch → HH:MM:SS */

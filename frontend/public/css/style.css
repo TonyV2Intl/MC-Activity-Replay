@@ -299,6 +299,34 @@ table.data tr.clickable { cursor: pointer; }
   font-weight: 600;
 }
 
+/* 回放页：常显玩家名字开关 */
+.tooltip-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.tooltip-toggle:hover { color: var(--text); }
+.tooltip-toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+
+/* 玩家头像 tooltip（常显或悬停，名字按玩家专属颜色着色） */
+.leaflet-tooltip.player-tooltip {
+  background: rgba(10, 12, 16, 0.88);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  box-shadow: none;
+  white-space: nowrap;
+}
+.leaflet-tooltip.player-tooltip:before { border-top-color: var(--accent); }
+
 .playback-controls { display: flex; flex-direction: column; gap: 10px; }
 .playback-controls .row { display: flex; align-items: center; gap: 8px; }
 .playback-controls input[type="range"] { flex: 1; accent-color: var(--accent); }
