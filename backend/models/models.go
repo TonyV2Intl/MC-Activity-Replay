@@ -103,6 +103,11 @@ type LivePlayer struct {
 	X     float64  `json:"x"`
 	Z     float64  `json:"z"`
 	Yaw   *float64 `json:"yaw"`
+	// MTR 乘坐状态（未配置/未采集时为空字符串；全零 ID 表示“无”，由前端归一化）
+	Station string `json:"station_id"`
+	Route   string `json:"route_id"`
+	RS1     string `json:"route_station_id1"`
+	RS2     string `json:"route_station_id2"`
 }
 
 // CollectorLive 实时监控响应

@@ -91,12 +91,9 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 	// 3. 以 Squaremap 为基准合并 MTR 数据
 	players := c.mergePlayers(smPlayer, mtrData, mtrFresh)
 
-	// 4. 应用玩家筛选 + 5. 过滤 (0,0) 坐标
+	// 4. 应用玩家筛选
 	filtered := make([]mergedPlayer, 0, len(players))
 	for _, p := range players {
-		if p.X == 0 && p.Z == 0 {
-			continue
-		}
 		if !c.passFilter(p) {
 			continue
 		}
@@ -157,16 +154,20 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 		}
 	}
 
-	// 10. 更新内存中的最近一次轮询结果
+	// 10. 更新内存中的最近一次轮询结果（含 MTR 乘坐状态，供控制台实时监控展示）
 	live := make([]models.LivePlayer, 0, len(filtered))
 	for _, p := range filtered {
 		live = append(live, models.LivePlayer{
-			UUID:  p.UUID,
-			Name:  p.Name,
-			World: p.World,
-			X:     p.X,
-			Z:     p.Z,
-			Yaw:   p.Yaw,
+			UUID:    p.UUID,
+			Name:    p.Name,
+			World:   p.World,
+			X:       p.X,
+			Z:       p.Z,
+			Yaw:     p.Yaw,
+			Station: p.Station,
+			Route:   p.Route,
+			RS1:     p.RS1,
+			RS2:     p.RS2,
 		})
 	}
 	c.setLive(live)
@@ -199,8 +200,10 @@ func (c *Collector) mergePlayers(smPlayers []SquaremapPlayer, mtrData *MTRData, 
 		})
 	}
 
-	// 合并 MTR 数据（仅当 cachedResponseTime 变化时）
-	if mtrData != nil && mtrFresh {
+	// 合并 MTR 数据（只要本轮成功取到数据即合并，使实时监控稳定获得乘坐状态；
+	// cachedResponseTime 未变化时数据与上轮相同，合并不产生影响；
+	// 数据库变化检测写入仍由 mtrFresh 门控）
+	if mtrData != nil {
 		for _, mc := range mtrData.Clients {
 			uuid := NormalizeUUID(mc.ID)
 			if uuid == "" {

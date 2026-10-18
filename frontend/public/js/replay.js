@@ -30,6 +30,11 @@ const PLAYER_COLORS = [
 const CHUNK_SIZE = 2000;   // 与后端默认分页一致
 const CHUNK_CONCURRENCY = 4; // 并行分块请求数
 
+// 相邻两个数据点间方块距离超过该阈值判定为“跳跃段”（传送 / 跨区域重连），
+// 用虚线绘制以区别于正常步行轨迹
+const DASH_JUMP_BLOCKS = 1000;
+const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
+
 const replayPage = {
   /* ---------- 状态 ---------- */
   sessionId: null,
@@ -286,7 +291,7 @@ const replayPage = {
   bindPlayerTooltip(marker, track) {
     if (!marker) return;
     if (marker.getTooltip()) marker.unbindTooltip();
-    const html = this.tooltipHTML(track);
+    const html = this.tooltipHTML(track, marker);
     marker.bindTooltip(html, {
       permanent: this.tooltipPermanent,
       direction: 'top',
@@ -325,27 +330,29 @@ const replayPage = {
   },
 
   /**
-   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前时刻的站点/线路（含 ID）。
-   * 无乘坐数据或状态为空时仅显示名字；名称表未加载/未收录时显示原始 ID。
+   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前时刻的站点/线路名称。
+   * 坐标由 marker 当前渲染位置经 latLngToBlock 逆换算为方块坐标（取整显示）；
+   * 仅显示站名/线路名（不显示 ID）；名称表未加载/未收录时回退为原始 ID。
+   * @param {object} track  track 对象
+   * @param {L.Marker} [marker] 头像标记（取其当前位置换算坐标）
    */
-  tooltipHTML(track) {
+  tooltipHTML(track, marker) {
     let html = '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
-    const rec = this.transitAt(track, this.currentTime);
-    if (!rec) return html;
-    const stations = this.network ? this.network.stations : {};
-    const routes = this.network ? this.network.routes : {};
-    if (rec.station) {
-      const st = stations[rec.station] || rec.station;
-      html += '<br><span class="tip-sub">站点: ' + escapeHtml(st) +
-        ' (' + escapeHtml(rec.station) + ')</span>';
+    if (marker) {
+      const b = latLngToBlock(marker.getLatLng());
+      html += '<br><span class="tip-sub">坐标: ' + Math.round(b.x) + ', ' + Math.round(b.z) + '</span>';
     }
-    if (rec.route) {
-      const rn = routes[rec.route] || rec.route;
-      let line = '线路: ' + escapeHtml(rn) + ' (' + escapeHtml(rec.route) + ')';
-      const s1 = rec.rs1 ? (stations[rec.rs1] || rec.rs1) : '';
-      const s2 = rec.rs2 ? (stations[rec.rs2] || rec.rs2) : '';
-      if (s1 && s2) line += ' ' + escapeHtml(s1) + ' → ' + escapeHtml(s2);
-      html += '<br><span class="tip-sub">' + line + '</span>';
+    const rec = this.transitAt(track, this.currentTime);
+    if (rec) {
+      const r = resolveTransit(rec, this.network);
+      if (r.stationName) {
+        html += '<br><span class="tip-sub">站点: ' + escapeHtml(r.stationName) + '</span>';
+      }
+      if (r.routeName) {
+        let line = '线路: ' + escapeHtml(r.routeName);
+        if (r.fromName && r.toName) line += ' ' + escapeHtml(r.fromName) + ' → ' + escapeHtml(r.toName);
+        html += '<br><span class="tip-sub">' + line + '</span>';
+      }
     }
     return html;
   },
@@ -392,14 +399,13 @@ const replayPage = {
     // 加载 MTR 乘坐状态变化记录（失败不影响轨迹回放，tooltip 回退为仅玩家名）
     try {
       const data = await api(`/sessions/${this.sessionId}/players/${uuid}/transit`);
-      // MTR 会用全零 ID 表示“无”（如 route_id = 0000000000000000），统一归一a为空
-      const normId = (v) => (v && !/^0+$/.test(v)) ? v : '';
+      // MTR 会用全零 ID 表示“无”（如 route_id = 0000000000000000），统一归一化为空
       const recs = (data.records || []).map((r) => ({
         t: new Date(r.time).getTime(),
-        station: normId(r.station_id),
-        route: normId(r.route_id),
-        rs1: normId(r.route_station_id1),
-        rs2: normId(r.route_station_id2),
+        station: normTransitId(r.station_id),
+        route: normTransitId(r.route_id),
+        rs1: normTransitId(r.route_station_id1),
+        rs2: normTransitId(r.route_station_id2),
       }));
       const track = this.tracks.get(uuid);
       if (track) {
@@ -417,9 +423,13 @@ const replayPage = {
     const times = new Array(n);
     const latlngs = new Array(n);
     const yaws = new Array(n);
+    const xs = new Array(n);
+    const zs = new Array(n);
     for (let i = 0; i < n; i++) {
       const p = points[i];
       times[i] = new Date(p.time).getTime();
+      xs[i] = Number(p.x);
+      zs[i] = Number(p.z);
       latlngs[i] = blockToLatLng(p.x, p.z);
       yaws[i] = (p.yaw == null) ? null : Number(p.yaw);
     }
@@ -434,6 +444,27 @@ const replayPage = {
     }
     const total = cum[n - 1];
 
+    // 段属性：相邻两点方块距离超过阈值判定为跳跃段（传送/重连），后续用虚线绘制
+    const dashed = new Array(n > 1 ? n - 1 : 0);
+    for (let i = 0; i < n - 1; i++) {
+      const dx = xs[i + 1] - xs[i];
+      const dz = zs[i + 1] - zs[i];
+      dashed[i] = Math.sqrt(dx * dx + dz * dz) > DASH_JUMP_BLOCKS;
+    }
+    // 连续同属性段合并为 run（减少 polyline 数量与每帧更新开销）；
+    // run 覆盖点索引 [startIdx, endIdx]（含两端）
+    const runs = [];
+    if (n > 1) {
+      let s = 0;
+      for (let i = 1; i < n - 1; i++) {
+        if (dashed[i] !== dashed[s]) {
+          runs.push({ startIdx: s, endIdx: i, dash: dashed[s] });
+          s = i;
+        }
+      }
+      runs.push({ startIdx: s, endIdx: n - 1, dash: dashed[s] });
+    }
+
     const color = PLAYER_COLORS[this.colorIndex % PLAYER_COLORS.length];
     this.colorIndex++;
 
@@ -444,8 +475,10 @@ const replayPage = {
     });
 
     const track = {
-      uuid, name, color, times, latlngs, yaws, seg, cum, total,
+      uuid, name, color, times, latlngs, yaws, xs, zs, seg, cum, total,
       tp: null, marker: null,
+      runs,                   // 折线分组 [{startIdx, endIdx, dash, latlngs, cumStart, cumEnd,
+                             //   passedLine, notPassedLine, state, splitSeg, splitAlpha}]
       transitTimes: [],   // MTR 状态变化时间戳（ms，升序）
       transitRecs: [],    // 对应的状态记录 {t, station, route, rs1, rs2}
       tipHTML: null,      // 工具提当前内容（变化检测用）
@@ -475,6 +508,28 @@ const replayPage = {
       if (track.tp.marker) {
         track.tp.marker.options.rotationAngle = normalizeYawAngle(yaws[0]);
       }
+      // 插件自带的 passed/notPassed 线整体隐藏（opacity:0；箭头装饰不受影响，
+      // 仍沿 passed+notPassed 绘制），线条渲染交由下方按 run 分组的自建 polyline
+      track.tp.passedLine.setStyle({ opacity: 0 });
+      track.tp.notPassedLine.setStyle({ opacity: 0 });
+
+      // 每个 run 两条 polyline：走过部分=玩家色，未走部分=半透明白；
+      // 跳跃段（dash=true）加 dashArray 虚线
+      for (const run of runs) {
+        run.latlngs = latlngs.slice(run.startIdx, run.endIdx + 1);
+        run.cumStart = cum[run.startIdx];
+        run.cumEnd = cum[run.endIdx];
+        const dashStyle = run.dash ? { dashArray: DASH_PATTERN } : {};
+        run.passedLine = L.polyline([], Object.assign({
+          color, weight: 4, opacity: 0.95, lineCap: 'butt',
+        }, dashStyle)).addTo(this.map);
+        run.notPassedLine = L.polyline(run.latlngs, Object.assign({
+          color: 'rgba(255,255,255,0.3)', weight: 4, opacity: 1, lineCap: 'butt',
+        }, dashStyle)).addTo(this.map);
+        run.state = 0;      // 0=未开始 1=部分走过 2=已走过
+        run.splitSeg = -1;  // 部分走过时的拆分段索引
+        run.splitAlpha = 0; // 段内插值系数
+      }
     } else {
       // 单点轨迹：插件要求至少 2 个坐标，退化为普通头像标记
       track.marker = L.marker(latlngs[0], { icon }).addTo(this.map);
@@ -499,6 +554,11 @@ const replayPage = {
     }
     if (track.marker) {
       this.map.removeLayer(track.marker);
+    }
+    // 清理自建的 run 折线（TrackPlayer.remove 不会移除它们）
+    for (const run of track.runs || []) {
+      this.map.removeLayer(run.passedLine);
+      this.map.removeLayer(run.notPassedLine);
     }
     this.tracks.delete(uuid);
     // 被跟随的玩家轨迹被移除时取消跟随
@@ -643,6 +703,46 @@ const replayPage = {
           track.tp.marker.options.rotationAngle = this.yawAngleAt(track, loc);
         }
         track.tp.setProgress(e);
+        // 更新按 run 分组的折线：D = 当前累积距离（haversine），
+        // 与 run.cumStart/cumEnd 比较得到 未开始 / 部分走过 / 已走过 三态，
+        // 仅在状态或拆分位置变化时写 DOM（暂停/拖动时免去重复渲染）
+        if (track.runs.length) {
+          const D = e * track.total;
+          for (const run of track.runs) {
+            let st, segIdx = -1, alpha = 0;
+            if (D >= run.cumEnd) st = 2;
+            else if (D <= run.cumStart) st = 0;
+            else {
+              st = 1;
+              let i = run.startIdx;
+              while (i < run.endIdx - 1 && track.cum[i + 1] <= D) i++;
+              const segLen = track.seg[i] || 0;
+              alpha = segLen > 0 ? (D - track.cum[i]) / segLen : 0;
+              segIdx = i;
+            }
+            if (run.state === st &&
+                (st !== 1 || (run.splitSeg === segIdx && Math.abs(run.splitAlpha - alpha) < 1e-9))) {
+              continue;
+            }
+            run.state = st;
+            run.splitSeg = segIdx;
+            run.splitAlpha = alpha;
+            if (st === 0) {
+              run.passedLine.setLatLngs([]);
+              run.notPassedLine.setLatLngs(run.latlngs);
+            } else if (st === 2) {
+              run.passedLine.setLatLngs(run.latlngs);
+              run.notPassedLine.setLatLngs([]);
+            } else {
+              // 部分走过：在拆分段内线性插值出当前位置点，前后两半分别着色
+              const a = track.latlngs[segIdx];
+              const b = track.latlngs[segIdx + 1];
+              const mid = L.latLng(a.lat + (b.lat - a.lat) * alpha, a.lng + (b.lng - a.lng) * alpha);
+              run.passedLine.setLatLngs(track.latlngs.slice(run.startIdx, segIdx + 1).concat([mid]));
+              run.notPassedLine.setLatLngs([mid].concat(track.latlngs.slice(segIdx + 1, run.endIdx + 1)));
+            }
+          }
+        }
         // 时间范围外的玩家标记淡化
         const out = loc.before || loc.after;
         if (track.tp.marker) {
@@ -651,11 +751,11 @@ const replayPage = {
       }
     }
 
-    // tooltip 内容跟随当前站点/线路状态更新（仅变化时写 DOM）
+    // tooltip 内容跟随当前坐标/站点/线路状态更新（仅变化时写 DOM）
     for (const track of this.tracks.values()) {
       const marker = track.tp ? track.tp.marker : track.marker;
       if (!marker || !marker.getTooltip()) continue;
-      const html = this.tooltipHTML(track);
+      const html = this.tooltipHTML(track, marker);
       if (html !== track.tipHTML) {
         track.tipHTML = html;
         marker.setTooltipContent(html);

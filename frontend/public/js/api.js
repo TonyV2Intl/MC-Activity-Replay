@@ -85,6 +85,32 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/**
+ * MTR 全零 ID 归一化：route_id = 0000000000000000 等全零串表示“无”，
+ * 统一归一为空字符串（数据库原始值即如此存储）。
+ */
+function normTransitId(v) {
+  return (v && !/^0+$/.test(v)) ? v : '';
+}
+
+/**
+ * 将 MTR 乘坐状态解析为可显示名称（回放 tooltip 与控制台实时监控共用）。
+ * @param {object} rec     {station, route, rs1, rs2}（应先经 normTransitId 归一化）
+ * @param {object|null} network {stations:{id:name}, routes:{id:name}}，null 时回退原始 ID
+ * @returns {{stationName:string, routeName:string, fromName:string, toName:string}}
+ */
+function resolveTransit(rec, network) {
+  const stations = network ? network.stations : {};
+  const routes = network ? network.routes : {};
+  const pick = (id, table) => (id ? (table[id] || id) : '');
+  return {
+    stationName: pick(rec.station, stations),
+    routeName: pick(rec.route, routes),
+    fromName: pick(rec.rs1, stations),
+    toName: pick(rec.rs2, stations),
+  };
+}
+
 /** 显示错误信息到指定元素 */
 function showError(el, msg) {
   if (!el) return;

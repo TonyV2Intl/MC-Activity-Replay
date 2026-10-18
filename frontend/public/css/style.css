@@ -205,6 +205,7 @@ table.data tr.clickable { cursor: pointer; }
 .live-player .info { line-height: 1.4; min-width: 0; }
 .live-player .name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
 .live-player .coords { color: var(--text-dim); font-size: 12px; font-family: ui-monospace, monospace; }
+.live-player .transit { color: var(--text-dim); font-size: 12px; }
 
 /* ---------- 错误日志 ---------- */
 .error-log {

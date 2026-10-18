@@ -6,11 +6,20 @@ const consolePage = {
   statusTimer: null,
   liveTimer: null,
 
+  // MTR 站线名称表（ID → 名称，来自 /api/network/names；未加载时为 null，回退原始 ID）
+  network: null,
+
   init() {
     this.refreshStatus();
     this.loadConfig();
     this.statusTimer = setInterval(() => this.refreshStatus(), 2000);
     this.liveTimer = setInterval(() => this.refreshLive(), 2000);
+
+    // MTR 站线名称表：后台加载不阻塞控制台渲染（上游响应约 2MB，
+    // 慢速链路下可达数分钟）；就绪前实时监控的站点/线路回退显示原始 ID
+    api('/network/names')
+      .then((n) => { this.network = { stations: n.stations || {}, routes: n.routes || {} }; })
+      .catch(() => { /* 忽略 */ });
 
     document.getElementById('select-filter-mode').addEventListener('change', e => {
       document.getElementById('filter-inputs').style.display =
@@ -71,15 +80,29 @@ const consolePage = {
         el.innerHTML = '<span class="hint">未在记录中</span>';
         return;
       }
-      el.innerHTML = live.players.map(p =>
-        '<div class="live-player">' +
+      el.innerHTML = live.players.map(p => {
+        let html = '<div class="live-player">' +
           '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
           '<div class="info">' +
             '<div class="name">' + esc(p.name) + '</div>' +
-            '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>' +
-          '</div>' +
-        '</div>'
-      ).join('');
+            '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>';
+        // MTR 乘坐状态：站点 + 线路（仅显示名称；名称表未就绪时回退原始 ID）
+        const r = resolveTransit({
+          station: normTransitId(p.station_id),
+          route: normTransitId(p.route_id),
+          rs1: normTransitId(p.route_station_id1),
+          rs2: normTransitId(p.route_station_id2),
+        }, this.network);
+        if (r.stationName) {
+          html += '<div class="transit">站点: ' + esc(r.stationName) + '</div>';
+        }
+        if (r.routeName) {
+          html += '<div class="transit">线路: ' + esc(r.routeName) +
+            (r.fromName && r.toName ? ' ' + esc(r.fromName) + ' → ' + esc(r.toName) : '') +
+            '</div>';
+        }
+        return html + '</div></div>';
+      }).join('');
     } catch (e) { /* 静默 */ }
   },
 
