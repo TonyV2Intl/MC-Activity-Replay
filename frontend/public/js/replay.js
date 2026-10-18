@@ -56,6 +56,9 @@ const replayPage = {
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
 
+  // MTR 站线名称表（ID → 名称，来自 /api/network/names；加载失败时为 null）
+  network: null,
+
   /* ---------- 初始化 ---------- */
   async init() {
     const params = new URLSearchParams(location.search);
@@ -81,6 +84,15 @@ const replayPage = {
 
     this.initMap();
     this.bindControls();
+
+    // MTR 站线名称表：后台加载不阻塞回放页渲染（上游响应约 2MB，
+    // 慢速链路下可达数分钟）；就绪后刷新 tooltip，失败则回退为原始 ID。
+    api('/network/names')
+      .then((n) => {
+        this.network = { stations: n.stations || {}, routes: n.routes || {} };
+        if (this.map) this.render();
+      })
+      .catch(() => { /* 忽略：tooltip 回退为原始 ID */ });
 
     try {
       const data = await api('/sessions/' + id + '/players');
@@ -274,7 +286,7 @@ const replayPage = {
   bindPlayerTooltip(marker, track) {
     if (!marker) return;
     if (marker.getTooltip()) marker.unbindTooltip();
-    const html = '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
+    const html = this.tooltipHTML(track);
     marker.bindTooltip(html, {
       permanent: this.tooltipPermanent,
       direction: 'top',
@@ -294,6 +306,48 @@ const replayPage = {
     for (const track of this.tracks.values()) {
       this.bindPlayerTooltip(track.tp ? track.tp.marker : track.marker, track);
     }
+  },
+
+  /**
+   * 二分查找时间 t 时玩家的 MTR 乘坐状态（最后一个 ≤ t 的记录）。
+   * t 早于首条记录时返回 null（无状态信息）。
+   */
+  transitAt(track, t) {
+    const times = track.transitTimes;
+    if (!times.length || t < times[0]) return null;
+    let lo = 0, hi = times.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (times[mid] <= t) lo = mid;
+      else hi = mid - 1;
+    }
+    return track.transitRecs[lo];
+  },
+
+  /**
+   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前时刻的站点/线路（含 ID）。
+   * 无乘坐数据或状态为空时仅显示名字；名称表未加载/未收录时显示原始 ID。
+   */
+  tooltipHTML(track) {
+    let html = '<span style="color:' + track.color + '">' + escapeHtml(track.name) + '</span>';
+    const rec = this.transitAt(track, this.currentTime);
+    if (!rec) return html;
+    const stations = this.network ? this.network.stations : {};
+    const routes = this.network ? this.network.routes : {};
+    if (rec.station) {
+      const st = stations[rec.station] || rec.station;
+      html += '<br><span class="tip-sub">站点: ' + escapeHtml(st) +
+        ' (' + escapeHtml(rec.station) + ')</span>';
+    }
+    if (rec.route) {
+      const rn = routes[rec.route] || rec.route;
+      let line = '线路: ' + escapeHtml(rn) + ' (' + escapeHtml(rec.route) + ')';
+      const s1 = rec.rs1 ? (stations[rec.rs1] || rec.rs1) : '';
+      const s2 = rec.rs2 ? (stations[rec.rs2] || rec.rs2) : '';
+      if (s1 && s2) line += ' ' + escapeHtml(s1) + ' → ' + escapeHtml(s2);
+      html += '<br><span class="tip-sub">' + line + '</span>';
+    }
+    return html;
   },
 
   /**
@@ -330,7 +384,30 @@ const replayPage = {
 
     // 加载期间用户可能已取消勾选
     const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
-    if (cb && !cb.checked) this.removeTrack(uuid);
+    if (cb && !cb.checked) {
+      this.removeTrack(uuid);
+      return;
+    }
+
+    // 加载 MTR 乘坐状态变化记录（失败不影响轨迹回放，tooltip 回退为仅玩家名）
+    try {
+      const data = await api(`/sessions/${this.sessionId}/players/${uuid}/transit`);
+      // MTR 会用全零 ID 表示“无”（如 route_id = 0000000000000000），统一归一a为空
+      const normId = (v) => (v && !/^0+$/.test(v)) ? v : '';
+      const recs = (data.records || []).map((r) => ({
+        t: new Date(r.time).getTime(),
+        station: normId(r.station_id),
+        route: normId(r.route_id),
+        rs1: normId(r.route_station_id1),
+        rs2: normId(r.route_station_id2),
+      }));
+      const track = this.tracks.get(uuid);
+      if (track) {
+        track.transitTimes = recs.map((r) => r.t);
+        track.transitRecs = recs;
+        this.render();
+      }
+    } catch (e) { /* 忽略 */ }
   },
 
   /** 由原始点构建 TrackPlayer（<2 个点退化为普通标记） */
@@ -366,7 +443,13 @@ const replayPage = {
       iconAnchor: [16, 16],
     });
 
-    const track = { uuid, name, color, times, latlngs, yaws, seg, cum, total, tp: null, marker: null };
+    const track = {
+      uuid, name, color, times, latlngs, yaws, seg, cum, total,
+      tp: null, marker: null,
+      transitTimes: [],   // MTR 状态变化时间戳（ms，升序）
+      transitRecs: [],    // 对应的状态记录 {t, station, route, rs1, rs2}
+      tipHTML: null,      // 工具提当前内容（变化检测用）
+    };
 
     if (n >= 2) {
       // speed=0：禁用插件内部按距离的自动推进，完全由本引擎按时间驱动
@@ -565,6 +648,17 @@ const replayPage = {
         if (track.tp.marker) {
           track.tp.marker.setOpacity(out ? 0.25 : 1);
         }
+      }
+    }
+
+    // tooltip 内容跟随当前站点/线路状态更新（仅变化时写 DOM）
+    for (const track of this.tracks.values()) {
+      const marker = track.tp ? track.tp.marker : track.marker;
+      if (!marker || !marker.getTooltip()) continue;
+      const html = this.tooltipHTML(track);
+      if (html !== track.tipHTML) {
+        track.tipHTML = html;
+        marker.setTooltipContent(html);
       }
     }
 

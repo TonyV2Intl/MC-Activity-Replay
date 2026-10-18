@@ -326,6 +326,7 @@ table.data tr.clickable { cursor: pointer; }
   white-space: nowrap;
 }
 .leaflet-tooltip.player-tooltip:before { border-top-color: var(--accent); }
+.player-tooltip .tip-sub { font-size: 11px; font-weight: 400; opacity: 0.85; }
 
 .playback-controls { display: flex; flex-direction: column; gap: 10px; }
 .playback-controls .row { display: flex; align-items: center; gap: 8px; }

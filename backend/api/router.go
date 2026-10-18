@@ -55,6 +55,9 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 			auth.GET("/config", getConfig(database))
 			auth.PUT("/config", updateConfig(database))
 
+			// MTR 站点/线路 ID → 名称映射（回放 tooltip 显示站名/线名）
+			auth.GET("/network/names", networkNames(database))
+
 			auth.GET("/database/export", exportDatabase(database))
 			auth.POST("/database/import", importDatabase(database, cfg, coll))
 		}

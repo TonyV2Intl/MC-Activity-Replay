@@ -42,6 +42,13 @@ func main() {
 		log.Printf("恢复中断会话时出错: %v", err)
 	}
 
+	// 后台维护 MTR 站线名称缓存（启动预热 + 定期刷新，使回放工具提始终有缓存可用）
+	netCtx, netCancel := context.WithCancel(context.Background())
+	defer netCancel()
+	api.StartNetworkCacheRefresher(netCtx, func() string {
+		return db.LoadConfigMap(context.Background(), database.Pool)["mtr_url"]
+	})
+
 	router := api.NewRouter(database, cfg, coll)
 	log.Printf("Minecraft 活动记录与回放系统后端启动，监听端口 %s", cfg.ServerPort)
 	if err := router.Run(":" + cfg.ServerPort); err != nil {
