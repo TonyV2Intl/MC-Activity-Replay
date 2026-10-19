@@ -422,6 +422,85 @@ func (c *Collector) Live() models.CollectorLive {
 	return live
 }
 
+// PreviewLive 未记录状态下的实时预览：临时拉取一次上游数据并返回，
+// 不创建会话、不写库、不改变采集状态。用于控制台在没有内存快照时
+// （从未录制，或后端重启后上一次轮询快照已丢失）手动点击「刷新」
+// 查看当前在线玩家。
+// 数据源与采集一致：Squaremap 为主（请求失败则预览失败）；
+// MTR 是否请求由 app_config 的 default_mtr_enabled 决定，失败不阻塞预览。
+// 不做玩家筛选（无会话级筛选配置），不去重（每次预览都是全量当前状态）。
+func (c *Collector) PreviewLive(ctx context.Context) (models.CollectorLive, error) {
+	cfgMap := db.LoadConfigMap(ctx, c.db.Pool)
+	squaremapURL := strings.TrimSpace(cfgMap["squaremap_url"])
+	if squaremapURL == "" {
+		squaremapURL = c.cfg.SquaremapURL
+	}
+	mtrURL := strings.TrimSpace(cfgMap["mtr_url"])
+	if mtrURL == "" {
+		mtrURL = c.cfg.MtrURL
+	}
+	mtrEnabled := parseBoolDefault(cfgMap["default_mtr_enabled"], true)
+
+	// 并行请求 Squaremap（主数据源）与 MTR（可关闭）
+	var (
+		wg       sync.WaitGroup
+		mtrData  *MTRData
+		mtrErr   error
+		smPlayer []SquaremapPlayer
+		smErr    error
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		smPlayer, smErr = FetchSquaremapPlayers(ctx, squaremapURL, 10*time.Second)
+	}()
+	if mtrEnabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mtrData, mtrErr = FetchMTR(ctx, mtrURL, 10*time.Second)
+		}()
+	}
+	wg.Wait()
+
+	// Squaremap 是主数据源，失败则预览失败
+	if smErr != nil {
+		return models.CollectorLive{}, fmt.Errorf("Squaremap 请求失败: %w", smErr)
+	}
+	// MTR 失败不阻塞预览（仅无乘坐状态数据）
+	if mtrErr != nil {
+		mtrData = nil
+	}
+
+	// 世界过滤沿用上次会话的世界（无会话时为空串 = 不过滤）；
+	// 持锁读取避免与 Start 的写入竞争
+	c.mu.RLock()
+	world := c.world
+	c.mu.RUnlock()
+
+	// 预览无去重状态，MTR 数据一律按 fresh 合并
+	players := c.mergePlayers(world, smPlayer, mtrData, true)
+	live := make([]models.LivePlayer, 0, len(players))
+	for _, p := range players {
+		live = append(live, models.LivePlayer{
+			UUID:    p.UUID,
+			Name:    p.Name,
+			World:   p.World,
+			X:       p.X,
+			Z:       p.Z,
+			Yaw:     p.Yaw,
+			Health:  p.Health,
+			Armor:   p.Armor,
+			Station: p.Station,
+			Route:   p.Route,
+			RS1:     p.RS1,
+			RS2:     p.RS2,
+		})
+	}
+	now := time.Now().UTC()
+	return models.CollectorLive{PolledAt: &now, Players: live}, nil
+}
+
 // ---------- 内部 ----------
 
 // run 轮询主循环。退出前（stopCh 触发）必须完成最终 flush——

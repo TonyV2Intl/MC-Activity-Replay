@@ -144,18 +144,25 @@ const consolePage = {
     this.updateLiveHint(null);
   },
 
-  /** 更新实时监控标题旁的间隔/更新时间提示 */
-  updateLiveHint(live) {
+  /**
+   * 更新实时监控标题旁的间隔/更新时间提示
+   * @param live 实时数据（录制快照 / 停止后快照 / 实时预览）
+   * @param isPreview 是否为实时预览（未记录状态下临时拉取的一次性数据）
+   */
+  updateLiveHint(live, isPreview) {
     const hint = document.getElementById('live-interval-hint');
     if (!hint) return;
     if (this.recording) {
       const at = live && live.polledAt ? ' · 更新于 ' + fmtTime(live.polledAt) : '';
       hint.textContent = '每 ' + this.liveIntervalMs + 'ms 刷新' + at;
+    } else if (isPreview) {
+      const at = live && live.polledAt ? ' · 预览更新于 ' + fmtTime(live.polledAt) : '';
+      hint.textContent = '未在记录 · 实时预览' + at;
     } else if (live && live.sessionId) {
       const at = live.polledAt ? ' · 快照更新于 ' + fmtTime(live.polledAt) : '';
       hint.textContent = '未在记录 · 自动刷新已停止' + at;
     } else {
-      hint.textContent = '未在记录 · 自动刷新已停止，点击「刷新」查看最后快照';
+      hint.textContent = '未在记录 · 自动刷新已停止，点击「刷新」查看实时预览';
     }
   },
 
@@ -177,71 +184,93 @@ const consolePage = {
       const live = await api('/collector/live');
       const el = document.getElementById('live-players');
       if (!live.sessionId || !live.players || !live.players.length) {
+        // 无内存快照（从未录制，或后端重启后上一次轮询快照已丢失）：
+        // 未记录状态下尝试拉取一次实时预览，让手动「刷新」也能看到当前玩家
+        // （不创建会话、不写库）；预览失败则回退到常规提示
+        if (!this.recording) {
+          try {
+            const preview = await api('/collector/preview');
+            if (preview && preview.players && preview.players.length) {
+              this.renderLive(preview, true);
+              return;
+            }
+          } catch (e) { /* 预览失败：回退到常规提示 */ }
+        }
         el.innerHTML = '<span class="hint">未在记录中</span>';
         this.updateLiveHint(null);
         return;
       }
-      // 记录坐标历史用于速度推算（时间戳取后端 polledAt，与采集时刻一致；
-      // 同一 polledAt 的重复刷新不重复记点）
-      const t = live.polledAt ? new Date(live.polledAt).getTime() : Date.now();
-      for (const p of live.players) {
-        let hist = this.speedHistory.get(p.uuid);
-        if (!hist) { hist = []; this.speedHistory.set(p.uuid, hist); }
-        const lastPt = hist[hist.length - 1];
-        if (!lastPt || lastPt.t !== t) {
-          hist.push({ x: p.x, z: p.z, t });
-          if (hist.length > 3) hist.shift();
-        }
-      }
-      // 清理已下线玩家的历史，防止长时间记录时 Map 无限增长
-      const online = new Set(live.players.map(p => p.uuid));
-      for (const uuid of this.speedHistory.keys()) {
-        if (!online.has(uuid)) this.speedHistory.delete(uuid);
-      }
-      this.updateLiveHint(live);
-      const fields = this.liveFields || {};
-      el.innerHTML = live.players.map(p => {
-        let html = '<div class="live-player">' +
-          '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
-          '<div class="info">' +
-          '<div class="name">' + esc(p.name) + '</div>';
-        if (fields.coords) {
-          html += '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>';
-        }
-        // 速度推算（格/秒，按用户选择的两点/三点模式）
-        if (fields.speed) {
-          const speed = calcSpeed(this.speedHistory.get(p.uuid), this.speedMode);
-          if (speed != null) {
-            html += '<div class="transit">速度: ' + speed.toFixed(1) + ' 格/s</div>';
-          }
-        }
-        // 生命值/护甲（未采集时为 null，不显示）
-        if (fields.health && p.health != null) {
-          html += '<div class="transit">血量: ' + p.health + '</div>';
-        }
-        if (fields.armor && p.armor != null) {
-          html += '<div class="transit">护甲: ' + p.armor + '</div>';
-        }
-        // MTR 乘坐状态：站点 + 线路（仅显示名称；名称表未就绪时回退原始 ID）
-        if (fields.station || fields.route) {
-          const r = resolveTransit({
-            station: normTransitId(p.station_id),
-            route: normTransitId(p.route_id),
-            rs1: normTransitId(p.route_station_id1),
-            rs2: normTransitId(p.route_station_id2),
-          }, this.network);
-          if (fields.station && r.stationName) {
-            html += '<div class="transit">站点: ' + esc(r.stationName) + '</div>';
-          }
-          if (fields.route && r.routeName) {
-            html += '<div class="transit">线路: ' + esc(r.routeName) +
-              (r.fromName && r.toName ? ' ' + esc(r.fromName) + ' → ' + esc(r.toName) : '') +
-              '</div>';
-          }
-        }
-        return html + '</div></div>';
-      }).join('');
+      this.renderLive(live, false);
     } catch (e) { /* 静默 */ }
+  },
+
+  /**
+   * 渲染实时玩家列表
+   * @param live 实时数据
+   * @param isPreview true = 未记录状态下的实时预览（非录制/停止快照）
+   */
+  renderLive(live, isPreview) {
+    const el = document.getElementById('live-players');
+    // 记录坐标历史用于速度推算（时间戳取后端 polledAt，与采集时刻一致；
+    // 同一 polledAt 的重复刷新不重复记点）
+    const t = live.polledAt ? new Date(live.polledAt).getTime() : Date.now();
+    for (const p of live.players) {
+      let hist = this.speedHistory.get(p.uuid);
+      if (!hist) { hist = []; this.speedHistory.set(p.uuid, hist); }
+      const lastPt = hist[hist.length - 1];
+      if (!lastPt || lastPt.t !== t) {
+        hist.push({ x: p.x, z: p.z, t });
+        if (hist.length > 3) hist.shift();
+      }
+    }
+    // 清理已下线玩家的历史，防止长时间记录时 Map 无限增长
+    const online = new Set(live.players.map(p => p.uuid));
+    for (const uuid of this.speedHistory.keys()) {
+      if (!online.has(uuid)) this.speedHistory.delete(uuid);
+    }
+    this.updateLiveHint(live, isPreview);
+    const fields = this.liveFields || {};
+    el.innerHTML = live.players.map(p => {
+      let html = '<div class="live-player">' +
+        '<img src="' + esc(avatarURL(p.uuid)) + '" alt="" loading="lazy">' +
+        '<div class="info">' +
+        '<div class="name">' + esc(p.name) + '</div>';
+      if (fields.coords) {
+        html += '<div class="coords">x: ' + Math.round(p.x) + '  z: ' + Math.round(p.z) + '</div>';
+      }
+      // 速度推算（格/秒，按用户选择的两点/三点模式）
+      if (fields.speed) {
+        const speed = calcSpeed(this.speedHistory.get(p.uuid), this.speedMode);
+        if (speed != null) {
+          html += '<div class="transit">速度: ' + speed.toFixed(1) + ' 格/s</div>';
+        }
+      }
+      // 生命值/护甲（未采集时为 null，不显示）
+      if (fields.health && p.health != null) {
+        html += '<div class="transit">血量: ' + p.health + '</div>';
+      }
+      if (fields.armor && p.armor != null) {
+        html += '<div class="transit">护甲: ' + p.armor + '</div>';
+      }
+      // MTR 乘坐状态：站点 + 线路（仅显示名称；名称表未就绪时回退原始 ID）
+      if (fields.station || fields.route) {
+        const r = resolveTransit({
+          station: normTransitId(p.station_id),
+          route: normTransitId(p.route_id),
+          rs1: normTransitId(p.route_station_id1),
+          rs2: normTransitId(p.route_station_id2),
+        }, this.network);
+        if (fields.station && r.stationName) {
+          html += '<div class="transit">站点: ' + esc(r.stationName) + '</div>';
+        }
+        if (fields.route && r.routeName) {
+          html += '<div class="transit">线路: ' + esc(r.routeName) +
+            (r.fromName && r.toName ? ' ' + esc(r.fromName) + ' → ' + esc(r.toName) : '') +
+            '</div>';
+        }
+      }
+      return html + '</div></div>';
+    }).join('');
   },
 
   // ---------- 记录控制 ----------

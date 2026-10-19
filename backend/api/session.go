@@ -302,3 +302,16 @@ func liveCollector(coll *collector.Collector) gin.HandlerFunc {
 		c.JSON(http.StatusOK, coll.Live())
 	}
 }
+
+// previewLive 未记录时的实时预览：临时拉取一次上游数据（不创建会话、不写库）。
+// 仅在没有轮询快照时由前端手动「刷新」触发，录制中不会调用。
+func previewLive(coll *collector.Collector) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		live, err := coll.PreviewLive(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, live)
+	}
+}

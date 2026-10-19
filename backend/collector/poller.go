@@ -96,8 +96,8 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 		c.lastMTRCached = mtrData.CachedResponseTime
 	}
 
-	// 3. 以 Squaremap 为基准合并 MTR 数据
-	players := c.mergePlayers(smPlayer, mtrData, mtrFresh)
+	// 3. 以 Squaremap 为基准合并 MTR 数据（world 取会话世界，由外层保证无并发写入）
+	players := c.mergePlayers(c.world, smPlayer, mtrData, mtrFresh)
 
 	// 4. 应用玩家筛选
 	filtered := make([]mergedPlayer, 0, len(players))
@@ -230,8 +230,10 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 	c.setLive(live, sessionID)
 }
 
-// mergePlayers 以 Squaremap 为基准合并 MTR 数据
-func (c *Collector) mergePlayers(smPlayers []SquaremapPlayer, mtrData *MTRData, mtrFresh bool) []mergedPlayer {
+// mergePlayers 以 Squaremap 为基准合并 MTR 数据。
+// world 为会话配置的世界（空串不过滤）；由调用方传入而非读 c.world，
+// 便于预览等非轮询路径在锁外读取后传入，避免数据竞争。
+func (c *Collector) mergePlayers(world string, smPlayers []SquaremapPlayer, mtrData *MTRData, mtrFresh bool) []mergedPlayer {
 	seen := make(map[string]bool, len(smPlayers))
 	result := make([]mergedPlayer, 0, len(smPlayers))
 	index := make(map[string]int, len(result))
@@ -242,7 +244,7 @@ func (c *Collector) mergePlayers(smPlayers []SquaremapPlayer, mtrData *MTRData, 
 		if uuid == "" {
 			continue
 		}
-		if c.world != "" && sp.World != "" && sp.World != c.world {
+		if world != "" && sp.World != "" && sp.World != world {
 			continue
 		}
 		seen[uuid] = true
@@ -274,13 +276,13 @@ func (c *Collector) mergePlayers(smPlayers []SquaremapPlayer, mtrData *MTRData, 
 				result[i].Route = mc.RouteID
 				result[i].RS1 = mc.RouteStationID1
 				result[i].RS2 = mc.RouteStationID2
-			} else if !seen[uuid] {
-				// 仅在 MTR 中出现的玩家：加入记录，world 用会话世界，生命值等为 NULL
-				seen[uuid] = true
-				result = append(result, mergedPlayer{
-					UUID:    uuid,
-					Name:    mc.Name,
-					World:   c.world,
+		} else if !seen[uuid] {
+			// 仅在 MTR 中出现的玩家：加入记录，world 用会话世界，生命值等为 NULL
+			seen[uuid] = true
+			result = append(result, mergedPlayer{
+				UUID:    uuid,
+				Name:    mc.Name,
+				World:   world,
 					X:       mc.X,
 					Z:       mc.Z,
 					Station: mc.StationID,

@@ -36,6 +36,7 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 			auth.POST("/collector/start", startCollector(database, coll))
 			auth.POST("/collector/stop", stopCollector(coll))
 			auth.GET("/collector/live", liveCollector(coll))
+		auth.GET("/collector/preview", previewLive(coll))
 
 			auth.GET("/sessions", listSessions(database))
 			auth.GET("/sessions/:id", getSession(database))
