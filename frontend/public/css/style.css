@@ -231,6 +231,9 @@ table.data tr.clickable { cursor: pointer; }
 }
 .check-group label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
 .check-group .hint { flex-basis: 100%; }
+/* 复选框组内的窄数字输入框（最多显示轨迹点数量，避免继承 width:100%） */
+.check-group input[type="number"] { width: 84px; flex: none; padding: 4px 8px; }
+.check-group input[type="number"]:disabled { opacity: 0.45; cursor: not-allowed; }
 .panel-head { display: flex; align-items: center; gap: 10px; }
 .panel-head h2 { margin: 0; }
 

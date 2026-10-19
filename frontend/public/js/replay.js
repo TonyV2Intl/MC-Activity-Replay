@@ -38,6 +38,11 @@ const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩
 // tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields）
 const DEFAULT_TIP_FIELDS = { name: true, coords: true, speed: true, health: true, armor: true, station: true, route: true };
 
+// 最多显示轨迹点数量：默认 1200 ≈ 当前时刻前后各 10 分钟（按每秒 1 个数据点估算）。
+// 勾选后仅绘制以当前时刻为中心、总数不超过该值的轨迹点，路线随播放动态伸缩
+const DEFAULT_MAX_POINTS = 1200;
+const MIN_MAX_POINTS = 10;
+
 const replayPage = {
   /* ---------- 状态 ---------- */
   sessionId: null,
@@ -68,6 +73,8 @@ const replayPage = {
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
 
   dashJump: true,           // 超 1000 格跳跃段是否用虚线连接（localStorage 持久化）
+  maxPointsEnabled: false,  // 是否限制最多显示轨迹点数量（localStorage 持久化，默认关）
+  maxPoints: DEFAULT_MAX_POINTS, // 最多显示的轨迹点数量（默认 1200 ≈ 前后各 10 分钟）
   playerColors: {},         // uuid -> '#rrggbb' 用户指定的轨迹颜色（localStorage 持久化）
   rebuilding: false,        // 正在本地重建轨迹（抑制 fitBounds 等副作用）
 
@@ -88,12 +95,15 @@ const replayPage = {
     this.sessionId = id;
 
     // 读取偏好（localStorage，跨会话保持）：常显名字 / 速度模式 / tooltip 栏目 /
-    // 瓦片代理 / 虚线连接 / 玩家轨迹颜色
+    // 瓦片代理 / 虚线连接 / 最多显示轨迹点数量 / 玩家轨迹颜色
     try {
       this.tooltipPermanent = localStorage.getItem('mc-replay.tooltipPermanent') === '1';
       this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
       this.tileProxy = localStorage.getItem('mc-replay.tileProxy') === '1';
       this.dashJump = localStorage.getItem('mc-replay.dashJump') !== '0';
+      this.maxPointsEnabled = localStorage.getItem('mc-replay.maxPointsEnabled') === '1';
+      const savedMaxPoints = parseInt(localStorage.getItem('mc-replay.maxPoints') || '', 10);
+      this.maxPoints = (savedMaxPoints >= MIN_MAX_POINTS) ? savedMaxPoints : DEFAULT_MAX_POINTS;
       const savedFields = JSON.parse(localStorage.getItem('mc-replay.tipFields') || 'null');
       this.tipFields = Object.assign({}, DEFAULT_TIP_FIELDS, savedFields || {});
       this.playerColors = JSON.parse(localStorage.getItem('mc-replay.playerColors') || '{}') || {};
@@ -259,6 +269,19 @@ const replayPage = {
     if (dashCb) {
       dashCb.checked = this.dashJump;
       dashCb.addEventListener('change', () => this.setDashJump(dashCb.checked));
+    }
+
+    // 最多显示轨迹点数量（偏好持久化到 localStorage；切换/改值即时生效，无需重建轨迹）
+    const maxCb = document.getElementById('check-max-points');
+    if (maxCb) {
+      maxCb.checked = this.maxPointsEnabled;
+      maxCb.addEventListener('change', () => this.setMaxPointsEnabled(maxCb.checked));
+    }
+    const maxInput = document.getElementById('input-max-points');
+    if (maxInput) {
+      maxInput.value = this.maxPoints;
+      maxInput.disabled = !this.maxPointsEnabled;
+      maxInput.addEventListener('change', () => this.setMaxPoints(maxInput.value));
     }
 
     // 速度推算模式（持久化到 localStorage，切换后强制刷新所有 tooltip）
@@ -743,9 +766,11 @@ const replayPage = {
         run.notPassedLine = L.polyline(run.latlngs, Object.assign({
           color: 'rgba(255,255,255,0.3)', weight: 4, opacity: 1, lineCap: 'butt',
         }, dashStyle)).addTo(this.map);
-        run.state = 0;      // 0=未开始 1=部分走过 2=已走过
+        run.state = 0;      // 0=未开始 1=部分走过 2=已走过 3=窗口外隐藏
         run.splitSeg = -1;  // 部分走过时的拆分段索引
         run.splitAlpha = 0; // 段内插值系数
+        run.vs = run.startIdx; // 窗口裁剪后的可见切片起止索引（变化时重绘）
+        run.ve = run.endIdx;
       }
     } else {
       // 单点轨迹：插件要求至少 2 个坐标，退化为普通头像标记
@@ -842,6 +867,39 @@ const replayPage = {
       localStorage.setItem('mc-replay.dashJump', this.dashJump ? '1' : '0');
     } catch (e) { /* 隐私模式等场景忽略 */ }
     for (const uuid of [...this.tracks.keys()]) this.rebuildTrack(uuid);
+  },
+
+  /**
+   * 切换「最多显示轨迹点数量」（localStorage 持久化）。
+   * 窗口裁剪发生在 render() 内，切换后只需重绘，无需重建轨迹图层。
+   */
+  setMaxPointsEnabled(on) {
+    this.maxPointsEnabled = !!on;
+    try {
+      localStorage.setItem('mc-replay.maxPointsEnabled', this.maxPointsEnabled ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.syncMaxPointsInput();
+    this.render();
+  },
+
+  /** 设置最多显示的轨迹点数量（localStorage 持久化，下限 MIN_MAX_POINTS，即时生效） */
+  setMaxPoints(v) {
+    let n = Math.floor(Number(v));
+    if (!Number.isFinite(n) || n < MIN_MAX_POINTS) n = MIN_MAX_POINTS;
+    this.maxPoints = n;
+    try {
+      localStorage.setItem('mc-replay.maxPoints', String(n));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.syncMaxPointsInput();
+    this.render();
+  },
+
+  /** 同步数量输入框（未勾选时禁用；聚焦中不抢写值，避免打断输入） */
+  syncMaxPointsInput() {
+    const input = document.getElementById('input-max-points');
+    if (!input) return;
+    input.disabled = !this.maxPointsEnabled;
+    if (document.activeElement !== input) input.value = this.maxPoints;
   },
 
   removeTrack(uuid) {
@@ -1001,43 +1059,76 @@ const replayPage = {
           track.tp.marker.options.rotationAngle = this.yawAngleAt(track, loc);
         }
         track.tp.setProgress(e);
+        // 最多显示轨迹点数量：窗口 [wLo, wHi] 以当前时刻所在点为中心，总数不超过
+        // maxPoints，随播放滑动（路线动态伸缩）。未开启时窗口覆盖整条轨迹，行为不变
+        let wLo = 0, wHi = track.times.length - 1;
+        if (this.maxPointsEnabled && this.maxPoints < track.times.length) {
+          const n = track.times.length;
+          const half = this.maxPoints >> 1;
+          const c = loc.after ? n - 1 : loc.i;
+          let lo = c - half;
+          let hi = c + (this.maxPoints - half - 1);
+          // 一侧被轨迹首/末端截断时，剩余额度转给另一侧（可见总数仍不超过 maxPoints）
+          if (lo < 0) { hi += -lo; lo = 0; }
+          if (hi > n - 1) { lo -= hi - (n - 1); hi = n - 1; }
+          wLo = Math.max(0, lo);
+          wHi = hi;
+        }
+        // 方向箭头装饰同步裁剪到窗口：插件的 setProgress 每帧都会用全轨迹的
+        // passed+notPassed 覆盖装饰路径，故须在其后重新设置为窗口路径，
+        // 否则窗口外的轨迹上仍会铺满箭头
+        if (wLo > 0 || wHi < track.times.length - 1) {
+          track.tp.polylineDecorator.setPaths([track.latlngs.slice(wLo, wHi + 1)]);
+        }
         // 更新按 run 分组的折线：D = 当前累积距离（haversine），
-        // 与 run.cumStart/cumEnd 比较得到 未开始 / 部分走过 / 已走过 三态，
+        // 与可见切片的 cum 比较得到 未开始 / 部分走过 / 已走过 / 窗口外 四态，
         // 仅在状态或拆分位置变化时写 DOM（暂停/拖动时免去重复渲染）
         if (track.runs.length) {
           const D = e * track.total;
           for (const run of track.runs) {
-            let st, segIdx = -1, alpha = 0;
-            if (D >= run.cumEnd) st = 2;
-            else if (D <= run.cumStart) st = 0;
-            else {
-              st = 1;
-              let i = run.startIdx;
-              while (i < run.endIdx - 1 && track.cum[i + 1] <= D) i++;
+            // 窗口与 run 索引区间求交，得到可见切片 [vs, ve]（含两端）
+            const vs = Math.max(run.startIdx, wLo);
+            const ve = Math.min(run.endIdx, wHi);
+            let st;
+            if (vs > ve) st = 3;                 // 整段在窗口外：隐藏
+            else if (D >= track.cum[ve]) st = 2; // 可见部分已全部走过
+            else if (D <= track.cum[vs]) st = 0; // 可见部分尚未开始
+            else st = 1;                         // 部分走过
+            let segIdx = -1, alpha = 0;
+            if (st === 1) {
+              // 拆分段必落在 [vs, ve-1]：由 cum[vs] < D < cum[ve] 可证；
+              // 仍做钳制防御，防止越界切片
+              let i = Math.min(Math.max(loc.i, vs), ve - 1);
+              while (i < ve - 1 && track.cum[i + 1] <= D) i++;
               const segLen = track.seg[i] || 0;
               alpha = segLen > 0 ? (D - track.cum[i]) / segLen : 0;
               segIdx = i;
             }
-            if (run.state === st &&
+            if (run.state === st && run.vs === vs && run.ve === ve &&
                 (st !== 1 || (run.splitSeg === segIdx && Math.abs(run.splitAlpha - alpha) < 1e-9))) {
               continue;
             }
             run.state = st;
+            run.vs = vs;
+            run.ve = ve;
             run.splitSeg = segIdx;
             run.splitAlpha = alpha;
-            if (st === 0) {
+            if (st === 3) {
               run.passedLine.setLatLngs([]);
-              run.notPassedLine.setLatLngs(run.latlngs);
+              run.notPassedLine.setLatLngs([]);
+            } else if (st === 0) {
+              run.passedLine.setLatLngs([]);
+              run.notPassedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, ve - run.startIdx + 1));
             } else if (st === 2) {
-              run.passedLine.setLatLngs(run.latlngs);
+              run.passedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, ve - run.startIdx + 1));
               run.notPassedLine.setLatLngs([]);
             } else {
               // 部分走过：在拆分段内线性插值出当前位置点，前后两半分别着色
               const a = track.latlngs[segIdx];
               const b = track.latlngs[segIdx + 1];
               const mid = L.latLng(a.lat + (b.lat - a.lat) * alpha, a.lng + (b.lng - a.lng) * alpha);
-              run.passedLine.setLatLngs(track.latlngs.slice(run.startIdx, segIdx + 1).concat([mid]));
-              run.notPassedLine.setLatLngs([mid].concat(track.latlngs.slice(segIdx + 1, run.endIdx + 1)));
+              run.passedLine.setLatLngs(track.latlngs.slice(vs - run.startIdx, segIdx + 1 - run.startIdx).concat([mid]));
+              run.notPassedLine.setLatLngs([mid].concat(track.latlngs.slice(segIdx + 1 - run.startIdx, ve - run.startIdx + 1)));
             }
           }
         }
