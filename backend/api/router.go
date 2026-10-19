@@ -46,7 +46,7 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 
 			auth.GET("/sessions/:id/players", sessionPlayers(database))
 			auth.GET("/sessions/:id/players/:uuid/trajectory", trajectory(database))
-			auth.GET("/sessions/:id/players/:uuid/transit", playerTransit(database))
+			auth.GET("/sessions/:id/players/:uuid/state", playerState(database))
 			auth.GET("/sessions/:id/snapshot", snapshot(database))
 			auth.GET("/sessions/:id/export", exportSession(database))
 

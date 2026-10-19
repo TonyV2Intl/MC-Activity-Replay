@@ -110,8 +110,8 @@ func trajectory(database *db.DB) gin.HandlerFunc {
 	}
 }
 
-// playerTransit 返回玩家的 MTR 状态变化记录
-func playerTransit(database *db.DB) gin.HandlerFunc {
+// playerState 返回玩家的状态变化记录（MTR 乘坐状态 + 生命值/护甲）
+func playerState(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseID(c, "id")
 		if !ok {
@@ -120,8 +120,8 @@ func playerTransit(database *db.DB) gin.HandlerFunc {
 		uuid := c.Param("uuid")
 
 		rows, err := database.Pool.Query(c.Request.Context(),
-			`SELECT time, station_id, route_id, route_station_id1, route_station_id2
-			 FROM player_transit_state WHERE session_id = $1 AND player_uuid = $2
+			`SELECT time, station_id, route_id, route_station_id1, route_station_id2, health, armor
+			 FROM player_state WHERE session_id = $1 AND player_uuid = $2
 			 ORDER BY time ASC`, id, uuid)
 		if err != nil {
 			serverError(c, err)
@@ -129,10 +129,10 @@ func playerTransit(database *db.DB) gin.HandlerFunc {
 		}
 		defer rows.Close()
 
-		records := make([]models.TransitRecord, 0)
+		records := make([]models.StateRecord, 0)
 		for rows.Next() {
-			var r models.TransitRecord
-			if err := rows.Scan(&r.Time, &r.StationID, &r.RouteID, &r.RouteStationID1, &r.RouteStationID2); err != nil {
+			var r models.StateRecord
+			if err := rows.Scan(&r.Time, &r.StationID, &r.RouteID, &r.RouteStationID1, &r.RouteStationID2, &r.Health, &r.Armor); err != nil {
 				serverError(c, err)
 				return
 			}

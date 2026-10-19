@@ -19,7 +19,15 @@ type Session struct {
 	World           string     `json:"world"`
 	TileZoom        int        `json:"tile_zoom"`
 	TileURLTemplate string     `json:"tile_url_template"`
-	CreatedAt       time.Time  `json:"created_at"`
+	// 采集标志（该次录制的配置快照）
+	MtrEnabled           bool      `json:"mtr_enabled"`            // 是否采集 MTR 数据
+	CollectStationID     bool      `json:"collect_station_id"`     // 采集站点 ID
+	CollectRouteID       bool      `json:"collect_route_id"`       // 采集线路 ID
+	CollectRouteStation1 bool      `json:"collect_route_station1"` // 采集线路起点站 ID
+	CollectRouteStation2 bool      `json:"collect_route_station2"` // 采集线路终点站 ID
+	CollectHealth        bool      `json:"collect_health"`         // 采集生命值（Squaremap）
+	CollectArmor         bool      `json:"collect_armor"`          // 采集护甲（Squaremap）
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 // SessionWithStats 带统计信息的会话（列表/详情返回）
@@ -39,13 +47,16 @@ type ActivityPoint struct {
 	Yaw  *float64  `json:"yaw"`
 }
 
-// TransitRecord MTR 乘坐状态变化记录
-type TransitRecord struct {
+// StateRecord 玩家状态变化记录（player_state 表）：
+// MTR 乘坐状态字段 + Squaremap 生命值/护甲。未采集的字段为 NULL。
+type StateRecord struct {
 	Time            time.Time `json:"time"`
 	StationID       *string   `json:"station_id"`
 	RouteID         *string   `json:"route_id"`
 	RouteStationID1 *string   `json:"route_station_id1"`
 	RouteStationID2 *string   `json:"route_station_id2"`
+	Health          *float64  `json:"health"`
+	Armor           *int      `json:"armor"`
 }
 
 // PlayerSummary 会话内玩家概要
@@ -103,6 +114,9 @@ type LivePlayer struct {
 	X     float64  `json:"x"`
 	Z     float64  `json:"z"`
 	Yaw   *float64 `json:"yaw"`
+	// 玩家状态（未配置/未采集时为 NULL）
+	Health *float64 `json:"health"`
+	Armor  *int     `json:"armor"`
 	// MTR 乘坐状态（未配置/未采集时为空字符串；全零 ID 表示“无”，由前端归一化）
 	Station string `json:"station_id"`
 	Route   string `json:"route_id"`
@@ -124,17 +138,25 @@ type PlayerFilter struct {
 	Names []string `json:"names"`
 }
 
-// StartCollectorRequest 开始记录请求
+// StartCollectorRequest 开始记录请求。
+// 采集标志字段为 nil 时回退到 app_config 对应默认值，再回退到硬编码默认。
 type StartCollectorRequest struct {
-	Name            *string       `json:"name"`
-	MaxDurationSec  *int          `json:"maxDurationSec"`
-	PollIntervalMs  *int          `json:"pollIntervalMs"`
-	MtrURL          *string       `json:"mtrUrl"`
-	SquaremapURL    *string       `json:"squaremapUrl"`
-	World           *string       `json:"world"`
-	TileZoom        *int          `json:"tileZoom"`
-	TileURLTemplate *string       `json:"tileUrlTemplate"`
-	PlayerFilter    *PlayerFilter `json:"playerFilter"`
+	Name                 *string       `json:"name"`
+	MaxDurationSec       *int          `json:"maxDurationSec"`
+	PollIntervalMs       *int          `json:"pollIntervalMs"`
+	MtrURL               *string       `json:"mtrUrl"`
+	SquaremapURL         *string       `json:"squaremapUrl"`
+	World                *string       `json:"world"`
+	TileZoom             *int          `json:"tileZoom"`
+	TileURLTemplate      *string       `json:"tileUrlTemplate"`
+	MtrEnabled           *bool         `json:"mtrEnabled"`
+	CollectStationID     *bool         `json:"collectStationId"`
+	CollectRouteID       *bool         `json:"collectRouteId"`
+	CollectRouteStation1 *bool         `json:"collectRouteStation1"`
+	CollectRouteStation2 *bool         `json:"collectRouteStation2"`
+	CollectHealth        *bool         `json:"collectHealth"`
+	CollectArmor         *bool         `json:"collectArmor"`
+	PlayerFilter         *PlayerFilter `json:"playerFilter"`
 }
 
 // ---------- 请求体 ----------
@@ -159,10 +181,12 @@ type ExportJSON struct {
 	Players []ExportPlayer `json:"players"`
 }
 
-// ExportPlayer 导出 JSON 中的玩家
+// ExportPlayer 导出 JSON 中的玩家。
+// State 为状态变化记录（player_state）；导入时兼容旧版键名 transit。
 type ExportPlayer struct {
 	UUID     string          `json:"uuid"`
 	Name     string          `json:"name"`
 	Activity []ActivityPoint `json:"activity"`
-	Transit  []TransitRecord `json:"transit"`
+	State    []StateRecord   `json:"state"`
+	Transit  []StateRecord   `json:"transit"` // 旧版导出键名，导入时回退兼容
 }

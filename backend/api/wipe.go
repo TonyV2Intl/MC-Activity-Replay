@@ -23,12 +23,12 @@ func wipeDatabase(database *db.DB, cfg *config.Config, coll *collector.Collector
 		}
 
 		ctx := c.Request.Context()
-		// 单条 TRUNCATE 必须包含全部表：player_activity / player_transit_state
+		// 单条 TRUNCATE 必须包含全部表：player_activity / player_state
 		// 经外键引用 sessions，分表截断会触发 "cannot truncate a table
 		// referenced in a foreign key constraint"。RESTART IDENTITY 重置
 		// SERIAL 序列，达到“全新安装”效果（hypertable 无自增列，无副作用）
 		if _, err := database.Pool.Exec(ctx,
-			`TRUNCATE TABLE sessions, player_activity, player_transit_state, app_config, admin_auth RESTART IDENTITY`); err != nil {
+			`TRUNCATE TABLE sessions, player_activity, player_state, app_config, admin_auth RESTART IDENTITY`); err != nil {
 			serverError(c, err)
 			return
 		}

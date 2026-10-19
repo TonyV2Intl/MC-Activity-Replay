@@ -63,6 +63,8 @@
         <span>卡片显示：</span>
         <label><input type="checkbox" class="live-field" value="coords" checked> 坐标</label>
         <label><input type="checkbox" class="live-field" value="speed" checked> 速度</label>
+        <label><input type="checkbox" class="live-field" value="health" checked> 血量</label>
+        <label><input type="checkbox" class="live-field" value="armor" checked> 护甲</label>
         <label><input type="checkbox" class="live-field" value="station" checked> 站点</label>
         <label><input type="checkbox" class="live-field" value="route" checked> 线路</label>
         <span class="hint">名字与头像始终显示（偏好记忆在浏览器本地）</span>
@@ -107,13 +109,33 @@
     <div class="panel">
       <h2>配置</h2>
       <div class="form-row">
-        <label>MTR API URL</label>
-        <input type="text" id="cfg-mtr-url">
+        <label><input type="checkbox" id="cfg-mtr-enabled" checked> 启用 MTR 数据采集</label>
+        <span class="hint">不勾选则仅使用 Squaremap 坐标数据（适用于没有安装 MTR 的服务器），下方 MTR 配置与字段将隐藏；新建会话时作为默认值写入</span>
+      </div>
+      <div id="cfg-mtr-section">
+        <div class="form-row">
+          <label>MTR API URL</label>
+          <input type="text" id="cfg-mtr-url">
+        </div>
+        <div class="form-row">
+          <label>MTR 状态字段</label>
+          <label><input type="checkbox" class="cfg-collect" value="station_id" checked> station_id</label>
+          <label><input type="checkbox" class="cfg-collect" value="route_id" checked> route_id</label>
+          <label><input type="checkbox" class="cfg-collect" value="route_station1" checked> route_station_id1</label>
+          <label><input type="checkbox" class="cfg-collect" value="route_station2" checked> route_station_id2</label>
+          <span class="hint">勾选要采集的可选字段，未勾选不写入 player_state 表</span>
+        </div>
       </div>
       <div class="form-row">
         <label>Squaremap API URL</label>
         <input type="text" id="cfg-squaremap-url">
         <span class="hint">采集时拉取玩家坐标的上游地址（新建会话时写入会话记录）</span>
+      </div>
+      <div class="form-row">
+        <label>Squaremap 玩家字段</label>
+        <label><input type="checkbox" class="cfg-collect" value="health"> health（生命值）</label>
+        <label><input type="checkbox" class="cfg-collect" value="armor"> armor（护甲）</label>
+        <span class="hint">默认不采集；勾选后写入 player_state 表（需 Squaremap 服务器提供该字段）</span>
       </div>
       <div class="form-row">
         <label>瓦片镜像 URL</label>

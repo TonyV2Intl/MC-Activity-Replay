@@ -1,7 +1,7 @@
 -- =============================================================
 -- Minecraft 玩家活动记录与回放系统 — 数据库初始化脚本
 -- 通过 /docker-entrypoint-initdb.d/ 在 TimescaleDB 容器
--- 首次启动时自动执行。
+-- 首次启动时自动执行。结构变更由后端 db.EnsureSchema 幂等迁移。
 -- =============================================================
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;
@@ -20,6 +20,14 @@ CREATE TABLE sessions (
     world           TEXT NOT NULL DEFAULT 'minecraft_overworld',
     tile_zoom       INTEGER NOT NULL DEFAULT 3,
     tile_url_template TEXT NOT NULL,                  -- 如 /tiles/{world}/{zoom}/{x}_{z}.png
+    -- 采集标志（新建会话时由 app_config 对应默认值写入，作为该次录制的配置快照）
+    mtr_enabled     BOOLEAN NOT NULL DEFAULT true,    -- 是否采集 MTR 数据（关闭后仅用 Squaremap）
+    collect_station_id BOOLEAN NOT NULL DEFAULT true,     -- 可选字段：站点 ID
+    collect_route_id BOOLEAN NOT NULL DEFAULT true,       -- 可选字段：线路 ID
+    collect_route_station1 BOOLEAN NOT NULL DEFAULT true, -- 可选字段：线路起点站 ID
+    collect_route_station2 BOOLEAN NOT NULL DEFAULT true, -- 可选字段：线路终点站 ID
+    collect_health  BOOLEAN NOT NULL DEFAULT false,   -- 可选字段：生命值（Squaremap）
+    collect_armor   BOOLEAN NOT NULL DEFAULT false,   -- 可选字段：护甲（Squaremap）
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -39,20 +47,25 @@ SELECT create_hypertable('player_activity', 'time', chunk_time_interval => INTER
 CREATE INDEX idx_activity_session_uuid_time ON player_activity (session_id, player_uuid, time);
 CREATE INDEX idx_activity_session_time ON player_activity (session_id, time);
 
--- 玩家乘坐状态表（低频数据，仅状态变化时写入）
-CREATE TABLE player_transit_state (
+-- 玩家状态表（player_state）：低频数据，仅状态变化时写入。
+-- 包含 MTR 乘坐状态（station/route/route_station1/2，受 mtr_enabled 与
+-- collect_* 标志控制）与 Squaremap 玩家状态（health/armor，受 collect_health/
+-- collect_armor 控制）。未勾选采集的字段为 NULL。
+CREATE TABLE player_state (
     time         TIMESTAMPTZ NOT NULL,
     session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     player_uuid  TEXT NOT NULL,
+    health       REAL,                                -- 生命值 0-20，NULL = 未采集
+    armor        INTEGER,                             -- 护甲 0-20，NULL = 未采集
     station_id   TEXT,
     route_id     TEXT,
     route_station_id1 TEXT,
     route_station_id2 TEXT
 );
 
-SELECT create_hypertable('player_transit_state', 'time', chunk_time_interval => INTERVAL '7 days');
+SELECT create_hypertable('player_state', 'time', chunk_time_interval => INTERVAL '7 days');
 
-CREATE INDEX idx_transit_session_uuid_time ON player_transit_state (session_id, player_uuid, time);
+CREATE INDEX idx_state_session_uuid_time ON player_state (session_id, player_uuid, time);
 
 -- 全局配置表（键值对）
 CREATE TABLE app_config (
@@ -76,12 +89,12 @@ ALTER TABLE player_activity SET (
 );
 SELECT add_compression_policy('player_activity', INTERVAL '30 days');
 
-ALTER TABLE player_transit_state SET (
+ALTER TABLE player_state SET (
     timescaledb.compress,
     timescaledb.compress_segmentby = 'session_id, player_uuid',
     timescaledb.compress_orderby = 'time DESC'
 );
-SELECT add_compression_policy('player_transit_state', INTERVAL '30 days');
+SELECT add_compression_policy('player_state', INTERVAL '30 days');
 
 -- 默认配置（可被控制台修改）。
 -- 与 db.EnsureSchema 的种子保持一致：世界名与瓦片 URL 模板固定为系统默认值
@@ -92,5 +105,12 @@ INSERT INTO app_config (key, value) VALUES
     ('mirror_url', ''),
     ('default_tile_zoom', '3'),
     ('default_poll_interval_ms', '1000'),
-    ('default_max_duration_sec', '')
+    ('default_max_duration_sec', ''),
+    ('default_mtr_enabled', 'true'),
+    ('default_collect_station_id', 'true'),
+    ('default_collect_route_id', 'true'),
+    ('default_collect_route_station1', 'true'),
+    ('default_collect_route_station2', 'true'),
+    ('default_collect_health', 'false'),
+    ('default_collect_armor', 'false')
 ON CONFLICT (key) DO NOTHING;

@@ -15,7 +15,10 @@ func scanSession(row pgx.Row) (*models.Session, error) {
 	var s models.Session
 	err := row.Scan(&s.ID, &s.Name, &s.StartedAt, &s.StoppedAt, &s.MaxDurationSec,
 		&s.StoppedReason, &s.PollIntervalMs, &s.MtrURL, &s.SquaremapURL,
-		&s.World, &s.TileZoom, &s.TileURLTemplate, &s.CreatedAt)
+		&s.World, &s.TileZoom, &s.TileURLTemplate,
+		&s.MtrEnabled, &s.CollectStationID, &s.CollectRouteID,
+		&s.CollectRouteStation1, &s.CollectRouteStation2, &s.CollectHealth, &s.CollectArmor,
+		&s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -23,14 +26,31 @@ func scanSession(row pgx.Row) (*models.Session, error) {
 }
 
 const sessionCols = `id, name, started_at, stopped_at, max_duration_sec, stopped_reason,
-	poll_interval_ms, mtr_url, squaremap_url, world, tile_zoom, tile_url_template, created_at`
+	poll_interval_ms, mtr_url, squaremap_url, world, tile_zoom, tile_url_template,
+	mtr_enabled, collect_station_id, collect_route_id, collect_route_station1,
+	collect_route_station2, collect_health, collect_armor, created_at`
+
+// sessionScanTargets 返回与会话列顺序一致的扫描目标（供列表/详情复用，
+// extra 为追加的统计列目标）
+func sessionScanTargets(s *models.Session, extra ...any) []any {
+	return append([]any{
+		&s.ID, &s.Name, &s.StartedAt, &s.StoppedAt, &s.MaxDurationSec,
+		&s.StoppedReason, &s.PollIntervalMs, &s.MtrURL, &s.SquaremapURL,
+		&s.World, &s.TileZoom, &s.TileURLTemplate,
+		&s.MtrEnabled, &s.CollectStationID, &s.CollectRouteID,
+		&s.CollectRouteStation1, &s.CollectRouteStation2, &s.CollectHealth, &s.CollectArmor,
+		&s.CreatedAt,
+	}, extra...)
+}
 
 // listSessions 列出所有会话（含统计信息）
 func listSessions(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := database.Pool.Query(c.Request.Context(),
 			`SELECT s.id, s.name, s.started_at, s.stopped_at, s.max_duration_sec, s.stopped_reason,
-			        s.poll_interval_ms, s.mtr_url, s.squaremap_url, s.world, s.tile_zoom, s.tile_url_template, s.created_at,
+			        s.poll_interval_ms, s.mtr_url, s.squaremap_url, s.world, s.tile_zoom, s.tile_url_template,
+			        s.mtr_enabled, s.collect_station_id, s.collect_route_id, s.collect_route_station1,
+			        s.collect_route_station2, s.collect_health, s.collect_armor, s.created_at,
 			        (SELECT COUNT(DISTINCT a.player_uuid) FROM player_activity a WHERE a.session_id = s.id),
 			        (SELECT COUNT(*) FROM player_activity a WHERE a.session_id = s.id)
 			 FROM sessions s ORDER BY s.started_at DESC`)
@@ -43,10 +63,7 @@ func listSessions(database *db.DB) gin.HandlerFunc {
 		list := make([]models.SessionWithStats, 0)
 		for rows.Next() {
 			var s models.SessionWithStats
-			if err := rows.Scan(&s.ID, &s.Name, &s.StartedAt, &s.StoppedAt, &s.MaxDurationSec,
-				&s.StoppedReason, &s.PollIntervalMs, &s.MtrURL, &s.SquaremapURL,
-				&s.World, &s.TileZoom, &s.TileURLTemplate, &s.CreatedAt,
-				&s.PlayerCount, &s.PointCount); err != nil {
+			if err := rows.Scan(sessionScanTargets(&s.Session, &s.PlayerCount, &s.PointCount)...); err != nil {
 				serverError(c, err)
 				return
 			}
@@ -66,14 +83,13 @@ func getSession(database *db.DB) gin.HandlerFunc {
 		var s models.SessionWithStats
 		err := database.Pool.QueryRow(c.Request.Context(),
 			`SELECT s.id, s.name, s.started_at, s.stopped_at, s.max_duration_sec, s.stopped_reason,
-			        s.poll_interval_ms, s.mtr_url, s.squaremap_url, s.world, s.tile_zoom, s.tile_url_template, s.created_at,
+			        s.poll_interval_ms, s.mtr_url, s.squaremap_url, s.world, s.tile_zoom, s.tile_url_template,
+			        s.mtr_enabled, s.collect_station_id, s.collect_route_id, s.collect_route_station1,
+			        s.collect_route_station2, s.collect_health, s.collect_armor, s.created_at,
 			        (SELECT COUNT(DISTINCT a.player_uuid) FROM player_activity a WHERE a.session_id = s.id),
 			        (SELECT COUNT(*) FROM player_activity a WHERE a.session_id = s.id)
 			 FROM sessions s WHERE s.id = $1`, id).
-			Scan(&s.ID, &s.Name, &s.StartedAt, &s.StoppedAt, &s.MaxDurationSec,
-				&s.StoppedReason, &s.PollIntervalMs, &s.MtrURL, &s.SquaremapURL,
-				&s.World, &s.TileZoom, &s.TileURLTemplate, &s.CreatedAt,
-				&s.PlayerCount, &s.PointCount)
+			Scan(sessionScanTargets(&s.Session, &s.PlayerCount, &s.PointCount)...)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
 			return
@@ -115,7 +131,7 @@ func deleteSession(database *db.DB) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		// ON DELETE CASCADE 会级联删除 player_activity / player_transit_state
+		// ON DELETE CASCADE 会级联删除 player_activity / player_state
 		tag, err := database.Pool.Exec(c.Request.Context(),
 			`DELETE FROM sessions WHERE id = $1`, id)
 		if err != nil {
@@ -198,10 +214,14 @@ func mergeSessions(database *db.DB) gin.HandlerFunc {
 		var newID int64
 		err = tx.QueryRow(ctx,
 			`INSERT INTO sessions (name, started_at, stopped_at, max_duration_sec, poll_interval_ms,
-			                        mtr_url, squaremap_url, world, tile_zoom, tile_url_template)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+		                        mtr_url, squaremap_url, world, tile_zoom, tile_url_template,
+		                        mtr_enabled, collect_station_id, collect_route_id, collect_route_station1,
+		                        collect_route_station2, collect_health, collect_armor)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING id`,
 			name, first.StartedAt, last.StoppedAt, first.MaxDurationSec, first.PollIntervalMs,
-			first.MtrURL, first.SquaremapURL, first.World, first.TileZoom, first.TileURLTemplate).Scan(&newID)
+			first.MtrURL, first.SquaremapURL, first.World, first.TileZoom, first.TileURLTemplate,
+			first.MtrEnabled, first.CollectStationID, first.CollectRouteID, first.CollectRouteStation1,
+			first.CollectRouteStation2, first.CollectHealth, first.CollectArmor).Scan(&newID)
 		if err != nil {
 			serverError(c, err)
 			return
@@ -214,8 +234,8 @@ func mergeSessions(database *db.DB) gin.HandlerFunc {
 			return
 		}
 		if _, err := tx.Exec(ctx,
-			`UPDATE player_transit_state SET session_id = $1 WHERE session_id = ANY($2)`, newID, req.SessionIDs); err != nil {
-			badRequest(c, "迁移乘坐状态数据失败（数据可能已被压缩，请先解压）: "+err.Error())
+			`UPDATE player_state SET session_id = $1 WHERE session_id = ANY($2)`, newID, req.SessionIDs); err != nil {
+			badRequest(c, "迁移玩家状态数据失败（数据可能已被压缩，请先解压）: "+err.Error())
 			return
 		}
 

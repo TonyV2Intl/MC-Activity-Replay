@@ -36,7 +36,7 @@ const DASH_JUMP_BLOCKS = 1000;
 const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
 
 // tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields）
-const DEFAULT_TIP_FIELDS = { name: true, coords: true, speed: true, station: true, route: true };
+const DEFAULT_TIP_FIELDS = { name: true, coords: true, speed: true, health: true, armor: true, station: true, route: true };
 
 const replayPage = {
   /* ---------- 状态 ---------- */
@@ -65,7 +65,7 @@ const replayPage = {
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
-  tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/站点/线路）
+  tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
 
   dashJump: true,           // 超 1000 格跳跃段是否用虚线连接（localStorage 持久化）
   playerColors: {},         // uuid -> '#rrggbb' 用户指定的轨迹颜色（localStorage 持久化）
@@ -488,8 +488,8 @@ const replayPage = {
    * 二分查找时间 t 时玩家的 MTR 乘坐状态（最后一个 ≤ t 的记录）。
    * t 早于首条记录时返回 null（无状态信息）。
    */
-  transitAt(track, t) {
-    const times = track.transitTimes;
+  stateAt(track, t) {
+    const times = track.stateTimes;
     if (!times.length || t < times[0]) return null;
     let lo = 0, hi = times.length - 1;
     while (lo < hi) {
@@ -497,14 +497,14 @@ const replayPage = {
       if (times[mid] <= t) lo = mid;
       else hi = mid - 1;
     }
-    return track.transitRecs[lo];
+    return track.stateRecs[lo];
   },
 
   /**
-   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前时刻的站点/线路名称。
-   * 各栏目由 tipFields 开关控制（名字/坐标/速度/站点/线路），偏好持久化在 localStorage。
+   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前时刻的血量/护甲与站点/线路名称。
+   * 各栏目由 tipFields 开关控制（名字/坐标/速度/血量/护甲/站点/线路），偏好持久化在 localStorage。
    * 坐标由 marker 当前渲染位置经 latLngToBlock 逆换算为方块坐标（取整显示）；
-   * 仅显示站名/线路名（不显示 ID）；名称表未加载/未收录时回退为原始 ID。
+   * 血量/护甲未采集时不显示；仅显示站名/线路名（不显示 ID）；名称表未加载/未收录时回退为原始 ID。
    * @param {object} track  track 对象
    * @param {L.Marker} [marker] 头像标记（取其当前位置换算坐标）
    */
@@ -525,9 +525,16 @@ const replayPage = {
         html += '<br><span class="tip-sub">速度: ' + v.toFixed(1) + ' 格/s</span>';
       }
     }
-    if (f.station || f.route) {
-      const rec = this.transitAt(track, this.currentTime);
+    if (f.station || f.route || f.health || f.armor) {
+      const rec = this.stateAt(track, this.currentTime);
       if (rec) {
+        // 生命值/护甲（未采集的字段为 null，不显示）
+        if (f.health && rec.health != null) {
+          html += '<br><span class="tip-sub">血量: ' + rec.health + '</span>';
+        }
+        if (f.armor && rec.armor != null) {
+          html += '<br><span class="tip-sub">护甲: ' + rec.armor + '</span>';
+        }
         const r = resolveTransit(rec, this.network);
         if (f.station && r.stationName) {
           html += '<br><span class="tip-sub">站点: ' + esc(r.stationName) + '</span>';
@@ -598,9 +605,9 @@ const replayPage = {
         return;
       }
 
-      // 加载 MTR 乘坐状态变化记录（失败不影响轨迹回放，tooltip 回退为仅玩家名）
+      // 加载玩家状态变化记录（失败不影响轨迹回放，tooltip 回退为仅玩家名）
       try {
-        const data = await api(`/sessions/${this.sessionId}/players/${uuid}/transit`);
+        const data = await api(`/sessions/${this.sessionId}/players/${uuid}/state`);
         // MTR 会用全零 ID 表示“无”（如 route_id = 0000000000000000），统一归一化为空
         const recs = (data.records || []).map((r) => ({
           t: new Date(r.time).getTime(),
@@ -608,11 +615,13 @@ const replayPage = {
           route: normTransitId(r.route_id),
           rs1: normTransitId(r.route_station_id1),
           rs2: normTransitId(r.route_station_id2),
+          health: (r.health == null) ? null : Number(r.health),
+          armor: (r.armor == null) ? null : Number(r.armor),
         }));
         const track = this.tracks.get(uuid);
         if (track) {
-          track.transitTimes = recs.map((r) => r.t);
-          track.transitRecs = recs;
+          track.stateTimes = recs.map((r) => r.t);
+          track.stateRecs = recs;
           this.render();
         }
       } catch (e) { /* 忽略 */ }
@@ -687,8 +696,8 @@ const replayPage = {
       tp: null, marker: null,
       runs,                   // 折线分组 [{startIdx, endIdx, dash, latlngs, cumStart, cumEnd,
                              //   passedLine, notPassedLine, state, splitSeg, splitAlpha}]
-      transitTimes: [],   // MTR 状态变化时间戳（ms，升序）
-      transitRecs: [],    // 对应的状态记录 {t, station, route, rs1, rs2}
+      stateTimes: [],   // 玩家状态变化时间戳（ms，升序）
+      stateRecs: [],    // 对应的状态记录 {t, station, route, rs1, rs2, health, armor}
       tipHTML: null,      // 工具提当前内容（变化检测用）
     };
 
@@ -774,8 +783,8 @@ const replayPage = {
     const raw = old.rawPoints;
     const name = old.rawName || old.name;
     const keepColor = old.color;
-    const transit = old.transitTimes.length
-      ? { times: old.transitTimes, recs: old.transitRecs } : null;
+    const stateKeep = old.stateTimes.length
+      ? { times: old.stateTimes, recs: old.stateRecs } : null;
     this.rebuilding = true;
     try {
       this.removeTrack(uuid);
@@ -784,9 +793,9 @@ const replayPage = {
       this.rebuilding = false;
     }
     const t = this.tracks.get(uuid);
-    if (t && transit) {
-      t.transitTimes = transit.times;
-      t.transitRecs = transit.recs;
+    if (t && stateKeep) {
+      t.stateTimes = stateKeep.times;
+      t.stateRecs = stateKeep.recs;
     }
     if (follow) this.setFollow(follow);
     this.recomputeRange();

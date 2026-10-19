@@ -9,6 +9,8 @@ import (
 
 // 已知配置项。
 // 世界名与瓦片 URL 模板固定为系统默认值，不提供配置项（见 collector.Start）。
+// default_mtr_enabled 与 default_collect_* 为采集标志的默认值，
+// 新建会话时作为默认写入会话记录。
 var knownConfigKeys = []string{
 	"mtr_url",
 	"squaremap_url",
@@ -16,6 +18,13 @@ var knownConfigKeys = []string{
 	"default_tile_zoom",
 	"default_poll_interval_ms",
 	"default_max_duration_sec",
+	"default_mtr_enabled",
+	"default_collect_station_id",
+	"default_collect_route_id",
+	"default_collect_route_station1",
+	"default_collect_route_station2",
+	"default_collect_health",
+	"default_collect_armor",
 }
 
 // getConfig 返回所有配置

@@ -53,18 +53,28 @@ type Collector struct {
 	durationTimer *time.Timer
 
 	// 去重状态（每个会话独立）
-	lastPositions map[string]posKey
-	lastTransit   map[string]transitKey
-	lastMTRCached int64
+	lastPositions   map[string]posKey
+	lastStateMTR    map[string]mtrKey    // MTR 乘坐状态（mtrFresh 门控）
+	lastStateVitals map[string]vitalsKey // 生命值/护甲（Squaremap，独立检测）
+	lastMTRCached   int64
 
 	// 批量写入缓冲（仅由轮询协程访问，Stop 会等待轮询协程退出后再 flush）
 	writeBuf    []activityRow
-	transitBuf  []transitRow
+	stateBuf    []stateRow
 	lastFlushAt time.Time
 
 	// 会话参数
 	world  string
 	filter *models.PlayerFilter
+
+	// 采集标志（会话级快照，运行期间只读）
+	mtrEnabled           bool
+	collectStation       bool
+	collectRoute         bool
+	collectRouteStation1 bool
+	collectRouteStation2 bool
+	collectHealth        bool
+	collectArmor         bool
 }
 
 // configForCollector 采集器需要的配置子集
@@ -80,8 +90,18 @@ type posKey struct {
 	YawOK bool
 }
 
-type transitKey struct {
+// mtrKey MTR 乘坐状态去重键（仅含启用采集的字段）
+type mtrKey struct {
 	Station, Route, RS1, RS2 string
+}
+
+// vitalsKey 生命值/护甲去重键（OK 标志区分"未采集/无数据"与具体值，
+// 避免指针比较按地址判等导致每轮都判定为变化）
+type vitalsKey struct {
+	Health   float64
+	HealthOK bool
+	Armor    int
+	ArmorOK  bool
 }
 
 // New 创建采集器
@@ -165,6 +185,24 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	if req.SquaremapURL != nil && *req.SquaremapURL != "" {
 		squaremapURL = *req.SquaremapURL
 	}
+	// 采集标志：请求未指定时回退到 app_config 的 default_* 键，再回退到硬编码默认。
+	// MTR 关闭时仅使用 Squaremap（适用于没有 MTR 的服务器）。
+	resolveFlag := func(reqVal *bool, cfgKey string, def bool) bool {
+		if reqVal != nil {
+			return *reqVal
+		}
+		if v, ok := cfgMap[cfgKey]; ok {
+			return parseBoolDefault(v, def)
+		}
+		return def
+	}
+	mtrEnabled := resolveFlag(req.MtrEnabled, "default_mtr_enabled", true)
+	collectStation := resolveFlag(req.CollectStationID, "default_collect_station_id", true)
+	collectRoute := resolveFlag(req.CollectRouteID, "default_collect_route_id", true)
+	collectRouteStation1 := resolveFlag(req.CollectRouteStation1, "default_collect_route_station1", true)
+	collectRouteStation2 := resolveFlag(req.CollectRouteStation2, "default_collect_route_station2", true)
+	collectHealth := resolveFlag(req.CollectHealth, "default_collect_health", false)
+	collectArmor := resolveFlag(req.CollectArmor, "default_collect_armor", false)
 	name := time.Now().UTC().Format("2006-01-02_15-04-05")
 	if req.Name != nil && *req.Name != "" {
 		name = *req.Name
@@ -176,21 +214,32 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 
 	// 插入会话记录
 	sess := &models.Session{
-		Name:            name,
-		StartedAt:       time.Now().UTC(),
-		MaxDurationSec:  maxDurationSec,
-		PollIntervalMs:  pollInterval,
-		MtrURL:          mtrURL,
-		SquaremapURL:    squaremapURL,
-		World:           world,
-		TileZoom:        tileZoom,
-		TileURLTemplate: tileURLTemplate,
+		Name:                 name,
+		StartedAt:            time.Now().UTC(),
+		MaxDurationSec:       maxDurationSec,
+		PollIntervalMs:       pollInterval,
+		MtrURL:               mtrURL,
+		SquaremapURL:         squaremapURL,
+		World:                world,
+		TileZoom:             tileZoom,
+		TileURLTemplate:      tileURLTemplate,
+		MtrEnabled:           mtrEnabled,
+		CollectStationID:     collectStation,
+		CollectRouteID:       collectRoute,
+		CollectRouteStation1: collectRouteStation1,
+		CollectRouteStation2: collectRouteStation2,
+		CollectHealth:        collectHealth,
+		CollectArmor:         collectArmor,
 	}
 	err := c.db.Pool.QueryRow(ctx,
-		`INSERT INTO sessions (name, started_at, max_duration_sec, poll_interval_ms, mtr_url, squaremap_url, world, tile_zoom, tile_url_template)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		`INSERT INTO sessions (name, started_at, max_duration_sec, poll_interval_ms, mtr_url, squaremap_url,
+		                        world, tile_zoom, tile_url_template, mtr_enabled, collect_station_id, collect_route_id,
+		                        collect_route_station1, collect_route_station2, collect_health, collect_armor)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id`,
 		sess.Name, sess.StartedAt, sess.MaxDurationSec, sess.PollIntervalMs,
-		sess.MtrURL, sess.SquaremapURL, sess.World, sess.TileZoom, sess.TileURLTemplate).Scan(&sess.ID)
+		sess.MtrURL, sess.SquaremapURL, sess.World, sess.TileZoom, sess.TileURLTemplate,
+		sess.MtrEnabled, sess.CollectStationID, sess.CollectRouteID,
+		sess.CollectRouteStation1, sess.CollectRouteStation2, sess.CollectHealth, sess.CollectArmor).Scan(&sess.ID)
 	if err != nil {
 		c.mu.Unlock()
 		return nil, fmt.Errorf("创建会话失败: %w", err)
@@ -204,15 +253,24 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	c.playerCount = 0
 	c.lastError = ""
 	c.lastPositions = make(map[string]posKey)
-	c.lastTransit = make(map[string]transitKey)
-	c.lastMTRCached = 0
+	c.lastStateMTR = make(map[string]mtrKey)
+	c.lastStateVitals = make(map[string]vitalsKey)
+	// 初始化为 -1：确保首次轮询的任何 cachedResponseTime（含 0）都算 fresh，正确建立 MTR 状态基线
+	c.lastMTRCached = -1
 	c.livePlayers = nil
 	c.livePolledAt = nil
 	c.writeBuf = nil
-	c.transitBuf = nil
+	c.stateBuf = nil
 	c.lastFlushAt = time.Now()
 	c.world = world
 	c.filter = filter
+	c.mtrEnabled = mtrEnabled
+	c.collectStation = collectStation
+	c.collectRoute = collectRoute
+	c.collectRouteStation1 = collectRouteStation1
+	c.collectRouteStation2 = collectRouteStation2
+	c.collectHealth = collectHealth
+	c.collectArmor = collectArmor
 
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
@@ -409,6 +467,18 @@ func (c *Collector) addError(msg string) {
 	if len(c.errors) > maxErrorEntries {
 		c.errors = c.errors[len(c.errors)-maxErrorEntries:]
 	}
+}
+
+// parseBoolDefault 解析配置值中的布尔（true/1/yes/on 为真，false/0/no/off 为假），
+// 空值或无法识别时返回默认值。
+func parseBoolDefault(s string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	}
+	return def
 }
 
 // setLive 更新最近一次轮询结果

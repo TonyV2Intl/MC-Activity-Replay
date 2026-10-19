@@ -136,30 +136,30 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 		}
 		w.WriteString(`]`)
 
-		// transit
-		w.WriteString(`,"transit":[`)
-		tRows, err := database.Pool.Query(ctx,
-			`SELECT time, station_id, route_id, route_station_id1, route_station_id2
-			 FROM player_transit_state WHERE session_id = $1 AND player_uuid = $2 ORDER BY time ASC`,
+		// state（player_state：MTR 乘坐状态 + 生命值/护甲）
+		w.WriteString(`,"state":[`)
+		sRows, err := database.Pool.Query(ctx,
+			`SELECT time, station_id, route_id, route_station_id1, route_station_id2, health, armor
+			 FROM player_state WHERE session_id = $1 AND player_uuid = $2 ORDER BY time ASC`,
 			sess.ID, p.uuid)
 		if err != nil {
 			return
 		}
-		firstTransit := true
-		for tRows.Next() {
-			var r models.TransitRecord
-			if err := tRows.Scan(&r.Time, &r.StationID, &r.RouteID, &r.RouteStationID1, &r.RouteStationID2); err != nil {
-				tRows.Close()
+		firstState := true
+		for sRows.Next() {
+			var r models.StateRecord
+			if err := sRows.Scan(&r.Time, &r.StationID, &r.RouteID, &r.RouteStationID1, &r.RouteStationID2, &r.Health, &r.Armor); err != nil {
+				sRows.Close()
 				return
 			}
-			if !firstTransit {
+			if !firstState {
 				w.WriteString(",")
 			}
-			firstTransit = false
+			firstState = false
 			rJSON, _ := json.Marshal(r)
 			w.Write(rJSON)
 		}
-		tRows.Close()
+		sRows.Close()
 		w.WriteString(`]}`)
 	}
 	w.WriteString(`]}`)
@@ -176,13 +176,13 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
 
 	w.Write([]string{"time", "player_uuid", "player_name", "x", "z", "yaw", "station_id", "route_id"})
 
-	// 用 LATERAL 关联每个位置点对应的最新乘坐状态
+	// 用 LATERAL 关联每个位置点对应的最新玩家状态
 	rows, err := database.Pool.Query(ctx,
 		`SELECT a.time, a.player_uuid, a.player_name, a.x, a.z, a.yaw,
 		        t.station_id, t.route_id
 		 FROM player_activity a
 		 LEFT JOIN LATERAL (
-		     SELECT station_id, route_id FROM player_transit_state t
+		     SELECT station_id, route_id FROM player_state t
 		     WHERE t.session_id = a.session_id AND t.player_uuid = a.player_uuid AND t.time <= a.time
 		     ORDER BY t.time DESC LIMIT 1
 		 ) t ON true
@@ -278,13 +278,36 @@ func importSession(database *db.DB) gin.HandlerFunc {
 		defer tx.Rollback(ctx)
 
 		s := data.Session
+		// 兼容旧版导出文件：无采集标志字段（只有 transit 键、没有 state 键）。
+		// 旧版行为固定为 MTR 与 MTR 字段启用、health/armor 未采集。
+		legacyFormat := false
+		for _, p := range data.Players {
+			if len(p.Transit) > 0 && len(p.State) == 0 {
+				legacyFormat = true
+				break
+			}
+		}
+		if legacyFormat {
+			s.MtrEnabled = true
+			s.CollectStationID = true
+			s.CollectRouteID = true
+			s.CollectRouteStation1 = true
+			s.CollectRouteStation2 = true
+			s.CollectHealth = false
+			s.CollectArmor = false
+		}
+
 		var newID int64
 		err = tx.QueryRow(ctx,
 			`INSERT INTO sessions (name, started_at, stopped_at, max_duration_sec, poll_interval_ms,
-			                        mtr_url, squaremap_url, world, tile_zoom, tile_url_template)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+			                        mtr_url, squaremap_url, world, tile_zoom, tile_url_template,
+			                        mtr_enabled, collect_station_id, collect_route_id, collect_route_station1,
+			                        collect_route_station2, collect_health, collect_armor)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING id`,
 			s.Name, s.StartedAt, s.StoppedAt, s.MaxDurationSec, s.PollIntervalMs,
-			s.MtrURL, s.SquaremapURL, s.World, s.TileZoom, s.TileURLTemplate).Scan(&newID)
+			s.MtrURL, s.SquaremapURL, s.World, s.TileZoom, s.TileURLTemplate,
+			s.MtrEnabled, s.CollectStationID, s.CollectRouteID, s.CollectRouteStation1,
+			s.CollectRouteStation2, s.CollectHealth, s.CollectArmor).Scan(&newID)
 		if err != nil {
 			serverError(c, err)
 			return
@@ -296,7 +319,11 @@ func importSession(database *db.DB) gin.HandlerFunc {
 				serverError(c, err)
 				return
 			}
-			if err := copyTransit(ctx, tx, newID, p.UUID, p.Transit); err != nil {
+			state := p.State
+			if len(state) == 0 {
+				state = p.Transit // 旧版导出键名兼容
+			}
+			if err := copyState(ctx, tx, newID, p.UUID, state); err != nil {
 				serverError(c, err)
 				return
 			}
@@ -399,10 +426,10 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 	// 全局按时间排序（稳定），用于推导起止时间与轮询间隔
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].t.Before(rows[j].t) })
 
-	// 按玩家分组（保持出现顺序），乘坐状态去重
+	// 按玩家分组（保持出现顺序），状态去重
 	order := []string{}
 	players := map[string]*models.ExportPlayer{}
-	lastTransit := map[string]string{}
+	lastState := map[string]string{}
 	for _, r := range rows {
 		if r.uuid == "" {
 			continue
@@ -418,10 +445,10 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 		}
 		p.Activity = append(p.Activity, models.ActivityPoint{Time: r.t, X: r.x, Z: r.z, Yaw: r.yaw})
 		key := r.station + "\x00" + r.route
-		if key != lastTransit[r.uuid] {
-			lastTransit[r.uuid] = key
+		if key != lastState[r.uuid] {
+			lastState[r.uuid] = key
 			station, route := r.station, r.route
-			p.Transit = append(p.Transit, models.TransitRecord{
+			p.State = append(p.State, models.StateRecord{
 				Time: r.t, StationID: &station, RouteID: &route,
 			})
 		}
@@ -448,6 +475,15 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 		World:           "minecraft_overworld", // 系统默认世界名
 		TileZoom:        tileZoom,
 		TileURLTemplate: "/tiles/{world}/{zoom}/{x}_{z}.png", // 系统默认瓦片模板
+		// CSV 宽表仅含 station_id/route_id 两列：按列存在情况推导管路标志，
+		// health/armor/线路起止站不在 CSV 中，视为未采集
+		MtrEnabled:           true,
+		CollectStationID:     hasTransit,
+		CollectRouteID:       hasTransit,
+		CollectRouteStation1: false,
+		CollectRouteStation2: false,
+		CollectHealth:        false,
+		CollectArmor:         false,
 	}
 
 	exportPlayers := make([]models.ExportPlayer, 0, len(order))
@@ -526,7 +562,7 @@ func copyActivity(ctx context.Context, tx pgx.Tx, sessionID int64, uuid, name st
 	return nil
 }
 
-func copyTransit(ctx context.Context, tx pgx.Tx, sessionID int64, uuid string, records []models.TransitRecord) error {
+func copyState(ctx context.Context, tx pgx.Tx, sessionID int64, uuid string, records []models.StateRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -537,14 +573,14 @@ func copyTransit(ctx context.Context, tx pgx.Tx, sessionID int64, uuid string, r
 		}
 		batch := records[start:end]
 		_, err := tx.CopyFrom(ctx,
-			pgx.Identifier{"player_transit_state"},
-			[]string{"time", "session_id", "player_uuid", "station_id", "route_id", "route_station_id1", "route_station_id2"},
+			pgx.Identifier{"player_state"},
+			[]string{"time", "session_id", "player_uuid", "health", "armor", "station_id", "route_id", "route_station_id1", "route_station_id2"},
 			pgx.CopyFromSlice(len(batch), func(i int) ([]any, error) {
 				r := batch[i]
-				return []any{r.Time, sessionID, uuid, r.StationID, r.RouteID, r.RouteStationID1, r.RouteStationID2}, nil
+				return []any{r.Time, sessionID, uuid, r.Health, r.Armor, r.StationID, r.RouteID, r.RouteStationID1, r.RouteStationID2}, nil
 			}))
 		if err != nil {
-			return fmt.Errorf("导入乘坐状态数据失败: %w", err)
+			return fmt.Errorf("导入玩家状态数据失败: %w", err)
 		}
 	}
 	return nil
@@ -564,11 +600,13 @@ var dataSnapshotTables = []struct {
 	order string
 }{
 	{"sessions", `id, name, started_at, stopped_at, max_duration_sec, stopped_reason,
-		poll_interval_ms, mtr_url, squaremap_url, world, tile_zoom, tile_url_template, created_at`, "id"},
+	poll_interval_ms, mtr_url, squaremap_url, world, tile_zoom, tile_url_template,
+	mtr_enabled, collect_station_id, collect_route_id, collect_route_station1,
+	collect_route_station2, collect_health, collect_armor, created_at`, "id"},
 	{"player_activity", `"time", session_id, player_uuid, player_name, x, z, yaw`,
 		`"time", session_id, player_uuid`},
-	{"player_transit_state", `"time", session_id, player_uuid, station_id, route_id,
-		route_station_id1, route_station_id2`, `"time", session_id, player_uuid`},
+	{"player_state", `"time", session_id, player_uuid, health, armor, station_id, route_id,
+	route_station_id1, route_station_id2`, `"time", session_id, player_uuid`},
 	{"app_config", "key, value, updated_at", "key"},
 	{"admin_auth", "id, password_hash, updated_at", "id"},
 }
@@ -703,7 +741,7 @@ func importDatabase(database *db.DB, cfg *config.Config, coll *collector.Collect
 		// 5. 清空结构重建时播种的数据（管理员密码、默认配置），避免与导入数据主键冲突。
 		//    单条 TRUNCATE 自动处理外键依赖顺序；序列值由导入文件中的 setval 恢复。
 		if _, err := database.Pool.Exec(c.Request.Context(),
-			`TRUNCATE TABLE sessions, player_activity, player_transit_state, app_config, admin_auth`); err != nil {
+			`TRUNCATE TABLE sessions, player_activity, player_state, app_config, admin_auth`); err != nil {
 			serverError(c, fmt.Errorf("清空现有数据失败: %w", err))
 			return
 		}

@@ -16,7 +16,7 @@ const consolePage = {
   speedHistory: new Map(), // uuid -> [{x, z, t}]（t 取后端 polledAt，最多保留 3 个）
 
   // 实时监控卡片栏目显示开关（localStorage 持久化；名字/头像始终显示）
-  liveFields: { coords: true, speed: true, station: true, route: true },
+  liveFields: { coords: true, speed: true, health: true, armor: true, station: true, route: true },
 
   init() {
     this.refreshStatus();
@@ -61,6 +61,30 @@ const consolePage = {
       document.getElementById('filter-inputs').style.display =
         e.target.value === 'all' ? 'none' : 'flex';
     });
+
+    // MTR 采集总开关：切换时显隐 MTR 配置与字段区
+    document.getElementById('cfg-mtr-enabled').addEventListener('change', () => {
+      this.toggleMtrSection();
+    });
+  },
+
+  // ---------- 配置辅助 ----------
+
+  /** 配置值是否为“显式 false”（与后端 parseBoolDefault 对应；空值/缺省交调用方用默认值） */
+  cfgIsFalse(v) {
+    return v === 'false' || v === '0' || v === 'no' || v === 'off';
+  },
+
+  /** 读取某个采集字段复选框的值（'true' / 'false'） */
+  collectVal(field) {
+    const el = document.querySelector('.cfg-collect[value="' + field + '"]');
+    return (el && el.checked) ? 'true' : 'false';
+  },
+
+  /** MTR 总开关切换：显隐 MTR 配置与字段区 */
+  toggleMtrSection() {
+    const on = document.getElementById('cfg-mtr-enabled').checked;
+    document.getElementById('cfg-mtr-section').style.display = on ? '' : 'none';
   },
 
   // ---------- 采集状态 ----------
@@ -191,6 +215,13 @@ const consolePage = {
             html += '<div class="transit">速度: ' + speed.toFixed(1) + ' 格/s</div>';
           }
         }
+        // 生命值/护甲（未采集时为 null，不显示）
+        if (fields.health && p.health != null) {
+          html += '<div class="transit">血量: ' + p.health + '</div>';
+        }
+        if (fields.armor && p.armor != null) {
+          html += '<div class="transit">护甲: ' + p.armor + '</div>';
+        }
         // MTR 乘坐状态：站点 + 线路（仅显示名称；名称表未就绪时回退原始 ID）
         if (fields.station || fields.route) {
           const r = resolveTransit({
@@ -275,6 +306,20 @@ const consolePage = {
       document.getElementById('cfg-squaremap-url').value = cfg.squaremap_url || '';
       document.getElementById('cfg-mirror-url').value = cfg.mirror_url || '';
       document.getElementById('cfg-tile-zoom').value = cfg.default_tile_zoom || 3;
+      // 采集标志（缺省时用系统默认：MTR 与 MTR 字段开、health/armor 关）
+      document.getElementById('cfg-mtr-enabled').checked =
+        cfg.default_mtr_enabled === undefined ? true : !this.cfgIsFalse(cfg.default_mtr_enabled);
+      const collectDefaults = {
+        station_id: true, route_id: true, route_station1: true, route_station2: true,
+        health: false, armor: false,
+      };
+      for (const [field, def] of Object.entries(collectDefaults)) {
+        const el = document.querySelector('.cfg-collect[value="' + field + '"]');
+        if (!el) continue;
+        const v = cfg['default_collect_' + field];
+        el.checked = v === undefined ? def : !this.cfgIsFalse(v);
+      }
+      this.toggleMtrSection();
     } catch (e) { /* 静默 */ }
   },
 
@@ -292,6 +337,13 @@ const consolePage = {
             squaremap_url: document.getElementById('cfg-squaremap-url').value.trim(),
             mirror_url: document.getElementById('cfg-mirror-url').value.trim(),
             default_tile_zoom: document.getElementById('cfg-tile-zoom').value.trim(),
+            default_mtr_enabled: document.getElementById('cfg-mtr-enabled').checked ? 'true' : 'false',
+            default_collect_station_id: this.collectVal('station_id'),
+            default_collect_route_id: this.collectVal('route_id'),
+            default_collect_route_station1: this.collectVal('route_station1'),
+            default_collect_route_station2: this.collectVal('route_station2'),
+            default_collect_health: this.collectVal('health'),
+            default_collect_armor: this.collectVal('armor'),
           },
         },
       });
