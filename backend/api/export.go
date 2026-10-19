@@ -278,24 +278,6 @@ func importSession(database *db.DB) gin.HandlerFunc {
 		defer tx.Rollback(ctx)
 
 		s := data.Session
-		// 兼容旧版导出文件：无采集标志字段（只有 transit 键、没有 state 键）。
-		// 旧版行为固定为 MTR 与 MTR 字段启用、health/armor 未采集。
-		legacyFormat := false
-		for _, p := range data.Players {
-			if len(p.Transit) > 0 && len(p.State) == 0 {
-				legacyFormat = true
-				break
-			}
-		}
-		if legacyFormat {
-			s.MtrEnabled = true
-			s.CollectStationID = true
-			s.CollectRouteID = true
-			s.CollectRouteStation1 = true
-			s.CollectRouteStation2 = true
-			s.CollectHealth = false
-			s.CollectArmor = false
-		}
 
 		var newID int64
 		err = tx.QueryRow(ctx,
@@ -320,9 +302,6 @@ func importSession(database *db.DB) gin.HandlerFunc {
 				return
 			}
 			state := p.State
-			if len(state) == 0 {
-				state = p.Transit // 旧版导出键名兼容
-			}
 			if err := copyState(ctx, tx, newID, p.UUID, state); err != nil {
 				serverError(c, err)
 				return
@@ -376,15 +355,14 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 		return models.ExportJSON{}, fmt.Errorf("CSV 为空")
 	}
 
-	// 头部：至少 time,player_uuid,player_name,x,z,yaw；station_id/route_id 可选
+	// 头部：固定 8 列 time,player_uuid,player_name,x,z,yaw,station_id,route_id
 	header := records[0]
 	for i := range header {
 		header[i] = strings.TrimSpace(strings.TrimPrefix(header[i], "\ufeff"))
 	}
-	if len(header) < 6 || strings.ToLower(header[0]) != "time" {
-		return models.ExportJSON{}, fmt.Errorf("CSV 表头应为 time,player_uuid,player_name,x,z,yaw[,station_id,route_id]")
+	if len(header) != 8 || strings.ToLower(header[0]) != "time" {
+		return models.ExportJSON{}, fmt.Errorf("CSV 表头应为 time,player_uuid,player_name,x,z,yaw,station_id,route_id")
 	}
-	hasTransit := len(header) >= 8
 
 	var rows []csvImportRow
 	for _, rec := range records[1:] {
@@ -409,14 +387,10 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 				yaw = &f
 			}
 		}
-		var station, route string
-		if hasTransit && len(rec) >= 8 {
-			station = strings.TrimSpace(rec[6])
-			route = strings.TrimSpace(rec[7])
-		}
 		rows = append(rows, csvImportRow{
 			t: t, uuid: strings.TrimSpace(rec[1]), name: strings.TrimSpace(rec[2]),
-			x: x, z: z, yaw: yaw, station: station, route: route,
+			x: x, z: z, yaw: yaw,
+			station: strings.TrimSpace(rec[6]), route: strings.TrimSpace(rec[7]),
 		})
 	}
 	if len(rows) == 0 {
@@ -475,11 +449,11 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 		World:           "minecraft_overworld", // 系统默认世界名
 		TileZoom:        tileZoom,
 		TileURLTemplate: "/tiles/{world}/{zoom}/{x}_{z}.png", // 系统默认瓦片模板
-		// CSV 宽表仅含 station_id/route_id 两列：按列存在情况推导管路标志，
-		// health/armor/线路起止站不在 CSV 中，视为未采集
+		// CSV 宽表仅含 station_id/route_id 两列：MTR 字段启用，
+		// 线路起止站/health/armor 不在 CSV 中，视为未采集
 		MtrEnabled:           true,
-		CollectStationID:     hasTransit,
-		CollectRouteID:       hasTransit,
+		CollectStationID:     true,
+		CollectRouteID:       true,
 		CollectRouteStation1: false,
 		CollectRouteStation2: false,
 		CollectHealth:        false,

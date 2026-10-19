@@ -182,11 +182,10 @@ type ExportJSON struct {
 }
 
 // ExportPlayer 导出 JSON 中的玩家。
-// State 为状态变化记录（player_state）；导入时兼容旧版键名 transit。
+// State 为状态变化记录（player_state）。
 type ExportPlayer struct {
 	UUID     string          `json:"uuid"`
 	Name     string          `json:"name"`
 	Activity []ActivityPoint `json:"activity"`
 	State    []StateRecord   `json:"state"`
-	Transit  []StateRecord   `json:"transit"` // 旧版导出键名，导入时回退兼容
 }

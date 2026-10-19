@@ -1,7 +1,7 @@
 -- =============================================================
 -- Minecraft 玩家活动记录与回放系统 — 数据库初始化脚本
 -- 通过 /docker-entrypoint-initdb.d/ 在 TimescaleDB 容器
--- 首次启动时自动执行。结构变更由后端 db.EnsureSchema 幂等迁移。
+-- 首次启动时自动执行。后端 db.EnsureSchema 作为幂等安全网（未执行本脚本时补齐结构）。
 -- =============================================================
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;

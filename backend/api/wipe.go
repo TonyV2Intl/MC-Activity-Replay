@@ -11,7 +11,7 @@ import (
 
 // wipeDatabase 一键清空数据库：TRUNCATE 全部表 → EnsureSchema 重新种子
 // 默认配置与初始管理员密码 → 清空采集器内存快照。
-// 用于彻底重置系统（如旧配置项冲突时），**不可恢复**；录制中拒绝执行。
+// 用于彻底重置系统，**不可恢复**；录制中拒绝执行。
 func wipeDatabase(database *db.DB, cfg *config.Config, coll *collector.Collector) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 记录中的采集器持有数据库写入，清空期间必须停止

@@ -127,7 +127,7 @@ mc-activity-replay/
 │   ├── Dockerfile
 │   ├── main.go             # 入口：加载配置 → 连库 → 幂等建表 → 恢复异常会话 → 启动 API
 │   ├── config/             # 环境变量配置
-│   ├── db/                 # 连接池 / 幂等迁移 / 共享配置读取
+│   ├── db/                 # 连接池 / 幂等建表（安全网）/ 共享配置读取
 │   ├── models/             # 数据结构
 │   ├── collector/          # MTR/Squaremap 客户端 + 轮询采集器
 │   └── api/                # Gin 路由与全部 REST 端点（含瓦片代理 tiles.go）
@@ -225,7 +225,7 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 5. **录制视频**：点击“进入录制模式”（自动弹出录屏源选择，请选择“当前标签页”），回放结束后点击“停止录制”，自动下载 webm 文件。按 Esc 可退出录制模式。
 6. **数据库备份**：控制台“数据库”区域点击“导出数据库”下载全库数据快照；点击“导入数据库”选择快照文件恢复。
 7. **一键清空数据库**：控制台“数据库导入导出”区域点击「一键清空数据库」（双重确认）——TRUNCATE 全部表并恢复默认系统配置与初始管理员密码，相当于全新安装，用于彻底重置、避免旧配置项冲突；**不可恢复**，录制中会拒绝执行。
-8. **导入单次会话**：控制台“数据库导入导出”区域点击“导入单次会话（JSON/CSV）”，选择文件后追加导入一次会话（不清空现有数据）。JSON 为「导出会话 JSON」的结构（version=1，含完整玩家轨迹与状态记录 `state`：MTR 乘坐字段 + 血量/护甲，兼容旧版导出的 `transit` 键）；CSV 为「导出会话 CSV」的宽表格式（`time,player_uuid,player_name,x,z,yaw,station_id,route_id`），后端按玩家分组还原轨迹，连续相同的 (station_id, route_id) 按状态变化去重为状态记录，会话元数据由数据推导（名称取文件名、起止时间取首末点、轮询间隔取相邻点间隔中位数，URL/世界/瓦片取当前配置或系统默认值）。
+8. **导入单次会话**：控制台“数据库导入导出”区域点击“导入单次会话（JSON/CSV）”，选择文件后追加导入一次会话（不清空现有数据）。JSON 为「导出会话 JSON」的结构（version=1，含完整玩家轨迹与状态记录 `state`：MTR 乘坐字段 + 血量/护甲）；CSV 为「导出会话 CSV」的宽表格式（`time,player_uuid,player_name,x,z,yaw,station_id,route_id`），后端按玩家分组还原轨迹，连续相同的 (station_id, route_id) 按状态变化去重为状态记录，会话元数据由数据推导（名称取文件名、起止时间取首末点、轮询间隔取相邻点间隔中位数，URL/世界/瓦片取当前配置或系统默认值）。
 
 ## 瓦片来源：镜像地址与服务器代理
 
@@ -248,7 +248,7 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 
 `POST /api/sessions/import` 以 `multipart/form-data`（字段名 `file`）上传**一次会话**的数据，追加导入、不清空现有数据。按扩展名/Content-Type 分流：
 
-- **JSON**（`GET /api/sessions/:id/export` 的产物，`version=1`）：完整还原会话元数据、全部玩家轨迹点与状态变化（MTR 乘坐字段含 `routeStationId1/2` 起终点 + 血量/护甲；旧版导出的 `transit` 键自动按 `state` 兼容读取）。
+- **JSON**（`GET /api/sessions/:id/export` 的产物，`version=1`）：完整还原会话元数据、全部玩家轨迹点与状态变化（MTR 乘坐字段含 `routeStationId1/2` 起终点 + 血量/护甲）。
 - **CSV**（`GET /api/sessions/:id/export?format=csv` 的产物，宽表 `time,player_uuid,player_name,x,z,yaw,station_id,route_id`）：每行一个数据点，`time` 为 RFC3339（可带小数秒，亚秒精度保证同一秒内多点与状态变化的顺序，导入往返无损），`station_id/route_id` 为该时刻最新乘坐状态（由导出端 LATERAL 关联生成，空表示未乘车）。导入时（见 `parseSessionCSV`）：
   - 按 `player_uuid` 分组还原每玩家轨迹点序列（保持时间排序）；
   - 连续相同的 `(station_id, route_id)` 按「状态变化才记录」去重为 `player_state` 行，与采集器语义一致；

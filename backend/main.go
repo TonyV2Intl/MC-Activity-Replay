@@ -20,7 +20,7 @@ func main() {
 	}
 	defer database.Close()
 
-	// 幂等结构迁移 + 初始管理员密码/默认配置种子
+	// 幂等结构安全网 + 初始管理员密码/默认配置种子
 	if err := db.EnsureSchema(context.Background(), database.Pool, cfg); err != nil {
 		log.Fatalf("数据库结构初始化失败: %v", err)
 	}
