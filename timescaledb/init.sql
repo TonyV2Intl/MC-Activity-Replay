@@ -83,12 +83,13 @@ ALTER TABLE player_transit_state SET (
 );
 SELECT add_compression_policy('player_transit_state', INTERVAL '30 days');
 
--- 默认配置（可被控制台修改）
+-- 默认配置（可被控制台修改）。
+-- 与 db.EnsureSchema 的种子保持一致：世界名与瓦片 URL 模板固定为系统默认值
+-- （collector.Start 硬编码），不再提供 default_world / tile_url_template 配置项。
 INSERT INTO app_config (key, value) VALUES
     ('mtr_url', 'https://letsplay.minecrafttransitrailway.com/system-map/mtr/api/map/clients?dimension=0'),
     ('squaremap_url', 'https://letsplay.minecrafttransitrailway.com/world-map'),
-    ('tile_url_template', '/tiles/{world}/{zoom}/{x}_{z}.png'),
-    ('default_world', 'minecraft_overworld'),
+    ('mirror_url', ''),
     ('default_tile_zoom', '3'),
     ('default_poll_interval_ms', '1000'),
     ('default_max_duration_sec', '')

@@ -77,10 +77,9 @@ func (d *DB) Close() {
 // 通过维护库 postgres 连接执行，WITH (FORCE) 会终止残留连接（PG13+）。
 // 重建后的库为空库，调用方需重新连接并恢复结构。
 func ResetDatabase(cfg *config.Config) error {
-	// 连到维护库（目标库被删除时维护连接不受影响）
-	dsn := "postgres://" + cfg.DBUser + ":" + cfg.DBPassword + "@" + cfg.DBHost + ":" + cfg.DBPort +
-		"/postgres?sslmode=disable"
-	conn, err := pgx.Connect(context.Background(), dsn)
+	// 连到维护库（目标库被删除时维护连接不受影响）。
+	// DSNFor 对用户信息做 URL 编码，密码含特殊字符时不会破坏连接串
+	conn, err := pgx.Connect(context.Background(), cfg.DSNFor("postgres"))
 	if err != nil {
 		return fmt.Errorf("连接维护库失败: %w", err)
 	}

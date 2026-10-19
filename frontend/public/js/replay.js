@@ -47,6 +47,7 @@ const replayPage = {
 
   players: [],              // [{uuid, name, pointCount}]
   tracks: new Map(),        // uuid -> track 对象
+  loadingTracks: new Set(), // 正在加载中的 uuid（防止重复加载产生重复轨迹图层）
   colorIndex: 0,            // 颜色分配计数器
 
   t0: 0,                    // 回放时间范围（ms epoch）
@@ -366,7 +367,7 @@ const replayPage = {
   /** 勾选/取消勾选玩家 */
   async togglePlayer(uuid, checked) {
     if (checked) {
-      if (this.tracks.has(uuid)) return;
+      if (this.tracks.has(uuid) || this.loadingTracks.has(uuid)) return;
       try {
         await this.loadTrack(uuid);
       } catch (e) {
@@ -555,61 +556,69 @@ const replayPage = {
   /**
    * 加载单个玩家完整轨迹（分块并行请求）。
    * 返回后若复选框已取消（竞态），立即移除。
+   * loadingTracks 守卫防止并发重复加载（重复加载会产生两份轨迹图层，
+   * 且后建的会覆盖 tracks 中的条目导致旧图层泄漏）。
    */
   async loadTrack(uuid) {
-    const meta = await api(`/sessions/${this.sessionId}/players/${uuid}/trajectory?chunk=0&chunkSize=${CHUNK_SIZE}`);
-    const name = meta.name || uuid.slice(0, 8);
-    const totalChunks = Math.max(1, meta.totalChunks || 1);
-    const chunks = new Array(totalChunks);
-    chunks[0] = meta.points || [];
-
-    let next = 1;
-    const worker = async () => {
-      while (next < totalChunks) {
-        const c = next++;
-        this.setLoadStatus(`加载 ${name} 轨迹… 分块 ${c + 1}/${totalChunks}`);
-        const data = await api(`/sessions/${this.sessionId}/players/${uuid}/trajectory?chunk=${c}&chunkSize=${CHUNK_SIZE}`);
-        chunks[c] = data.points || [];
-      }
-    };
-    const workers = [];
-    for (let i = 0; i < Math.min(CHUNK_CONCURRENCY, totalChunks - 1); i++) workers.push(worker());
-    await Promise.all(workers);
-
-    // 按分块顺序拼接（各块内部已按时间升序）
-    const points = [];
-    for (const c of chunks) if (c) points.push(...c);
-    this.setLoadStatus(`${name} 轨迹加载完成（${fmtNum(points.length)} 点）`);
-
-    this.buildTrack(uuid, name, points);
-    this.recomputeRange();
-    this.syncColorInputs();
-
-    // 加载期间用户可能已取消勾选
-    const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
-    if (cb && !cb.checked) {
-      this.removeTrack(uuid);
-      return;
-    }
-
-    // 加载 MTR 乘坐状态变化记录（失败不影响轨迹回放，tooltip 回退为仅玩家名）
+    if (this.tracks.has(uuid) || this.loadingTracks.has(uuid)) return;
+    this.loadingTracks.add(uuid);
     try {
-      const data = await api(`/sessions/${this.sessionId}/players/${uuid}/transit`);
-      // MTR 会用全零 ID 表示“无”（如 route_id = 0000000000000000），统一归一化为空
-      const recs = (data.records || []).map((r) => ({
-        t: new Date(r.time).getTime(),
-        station: normTransitId(r.station_id),
-        route: normTransitId(r.route_id),
-        rs1: normTransitId(r.route_station_id1),
-        rs2: normTransitId(r.route_station_id2),
-      }));
-      const track = this.tracks.get(uuid);
-      if (track) {
-        track.transitTimes = recs.map((r) => r.t);
-        track.transitRecs = recs;
-        this.render();
+      const meta = await api(`/sessions/${this.sessionId}/players/${uuid}/trajectory?chunk=0&chunkSize=${CHUNK_SIZE}`);
+      const name = meta.name || uuid.slice(0, 8);
+      const totalChunks = Math.max(1, meta.totalChunks || 1);
+      const chunks = new Array(totalChunks);
+      chunks[0] = meta.points || [];
+
+      let next = 1;
+      const worker = async () => {
+        while (next < totalChunks) {
+          const c = next++;
+          this.setLoadStatus(`加载 ${name} 轨迹… 分块 ${c + 1}/${totalChunks}`);
+          const data = await api(`/sessions/${this.sessionId}/players/${uuid}/trajectory?chunk=${c}&chunkSize=${CHUNK_SIZE}`);
+          chunks[c] = data.points || [];
+        }
+      };
+      const workers = [];
+      for (let i = 0; i < Math.min(CHUNK_CONCURRENCY, totalChunks - 1); i++) workers.push(worker());
+      await Promise.all(workers);
+
+      // 按分块顺序拼接（各块内部已按时间升序）
+      const points = [];
+      for (const c of chunks) if (c) points.push(...c);
+      this.setLoadStatus(`${name} 轨迹加载完成（${fmtNum(points.length)} 点）`);
+
+      this.buildTrack(uuid, name, points);
+      this.recomputeRange();
+      this.syncColorInputs();
+
+      // 加载期间用户可能已取消勾选
+      const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
+      if (cb && !cb.checked) {
+        this.removeTrack(uuid);
+        return;
       }
-    } catch (e) { /* 忽略 */ }
+
+      // 加载 MTR 乘坐状态变化记录（失败不影响轨迹回放，tooltip 回退为仅玩家名）
+      try {
+        const data = await api(`/sessions/${this.sessionId}/players/${uuid}/transit`);
+        // MTR 会用全零 ID 表示“无”（如 route_id = 0000000000000000），统一归一化为空
+        const recs = (data.records || []).map((r) => ({
+          t: new Date(r.time).getTime(),
+          station: normTransitId(r.station_id),
+          route: normTransitId(r.route_id),
+          rs1: normTransitId(r.route_station_id1),
+          rs2: normTransitId(r.route_station_id2),
+        }));
+        const track = this.tracks.get(uuid);
+        if (track) {
+          track.transitTimes = recs.map((r) => r.t);
+          track.transitRecs = recs;
+          this.render();
+        }
+      } catch (e) { /* 忽略 */ }
+    } finally {
+      this.loadingTracks.delete(uuid);
+    }
   },
 
   /** 由原始点构建 TrackPlayer（<2 个点退化为普通标记）。
@@ -1130,10 +1139,13 @@ const replayPage = {
     document.getElementById('btn-record-mode').textContent = '退出录制模式';
     document.getElementById('btn-record').style.display = '';
     setTimeout(() => this.map && this.map.invalidateSize(), 60);
-    // 进入录制模式即启动录屏（用户需在浏览器弹窗中选择"当前标签页"）
+    // 进入录制模式即启动录屏（用户需在浏览器弹窗中选择"当前标签页"）。
+    // 失败（如用户取消选择屏幕源）时退出录制模式，避免界面停留在
+    // 控制面板全隐藏的状态（只能靠 Esc 恢复）
     try {
       await this.toggleRecord();
     } catch (e) {
+      this.exitRecordingMode();
       this.setLoadStatus('录屏启动失败: ' + e.message);
     }
   },

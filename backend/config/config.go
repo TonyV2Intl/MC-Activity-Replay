@@ -2,6 +2,8 @@
 package config
 
 import (
+	"net"
+	"net/url"
 	"os"
 )
 
@@ -31,9 +33,29 @@ func Load() *Config {
 	}
 }
 
-// DSN 返回 pgx 连接字符串
+// DSN 返回 pgx 连接字符串（目标库为配置库）
 func (c *Config) DSN() string {
-	return "postgres://" + c.DBUser + ":" + c.DBPassword + "@" + c.DBHost + ":" + c.DBPort + "/" + c.DBName + "?sslmode=disable"
+	return c.dsn(c.DBName)
+}
+
+// DSNFor 返回连接指定数据库的 DSN（维护库连接等场景使用）
+func (c *Config) DSNFor(dbName string) string {
+	return c.dsn(dbName)
+}
+
+// dsn 构造 URL 形式的连接串。用户信息经 net/url 百分号编码，
+// 密码含 @ / : 等特殊字符时不会破坏 DSN 解析（pgx 会解码还原）。
+func (c *Config) dsn(dbName string) string {
+	u := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.DBUser, c.DBPassword),
+		Host:   net.JoinHostPort(c.DBHost, c.DBPort),
+		Path:   "/" + dbName,
+	}
+	q := u.Query()
+	q.Set("sslmode", "disable")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func getEnv(key, def string) string {

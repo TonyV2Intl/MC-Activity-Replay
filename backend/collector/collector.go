@@ -49,6 +49,9 @@ type Collector struct {
 	doneCh   chan struct{}
 	stopping bool
 
+	// 时长上限定时器（Stop 时取消，避免手动停止后仍触发自动停止的错误日志）
+	durationTimer *time.Timer
+
 	// 去重状态（每个会话独立）
 	lastPositions map[string]posKey
 	lastTransit   map[string]transitKey
@@ -217,9 +220,11 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	c.stopCh = stopCh
 	c.doneCh = doneCh
 
-	// 倒计时硬上限：到时强制停止，无延长选项
+	// 倒计时硬上限：到时强制停止，无延长选项。
+	// 定时器句柄保存在 durationTimer，Stop 时取消——否则手动停止后定时器
+	// 仍会触发，向错误日志写入无意义的"自动停止失败: 当前没有进行中的会话"
 	if maxDurationSec != nil && *maxDurationSec > 0 {
-		time.AfterFunc(time.Duration(*maxDurationSec)*time.Second, func() {
+		c.durationTimer = time.AfterFunc(time.Duration(*maxDurationSec)*time.Second, func() {
 			c.addError("记录时长达到上限，自动停止")
 			if err := c.Stop(context.Background(), "timeout"); err != nil {
 				c.addError("自动停止失败: " + err.Error())
@@ -234,7 +239,9 @@ func (c *Collector) Start(ctx context.Context, req models.StartCollectorRequest)
 	return sess, nil
 }
 
-// Stop 停止当前记录会话，reason 为 'manual' 或 'timeout'
+// Stop 停止当前记录会话，reason 为 'manual' 或 'timeout'。
+// 最终 flush 由轮询协程在退出前自行完成（见 run），本方法只负责通知与等待，
+// 避免 Stop 与轮询协程同时操作写入缓冲的数据竞争。
 func (c *Collector) Stop(ctx context.Context, reason string) error {
 	c.mu.Lock()
 	if c.status != StatusRecording || c.stopping {
@@ -246,9 +253,14 @@ func (c *Collector) Stop(ctx context.Context, reason string) error {
 	stopCh, doneCh := c.stopCh, c.doneCh
 	c.stopCh, c.doneCh = nil, nil
 	c.stopping = true // 阻止并发 Start，直到轮询协程完全退出
+	// 取消时长上限定时器（手动/超时停止都不需要它再触发）
+	if c.durationTimer != nil {
+		c.durationTimer.Stop()
+		c.durationTimer = nil
+	}
 	c.mu.Unlock()
 
-	// 通知轮询协程退出并等待其结束，避免 flush 与写入竞争
+	// 通知轮询协程退出并等待其结束（协程退出前会自行完成最终 flush）
 	if stopCh != nil {
 		close(stopCh)
 	}
@@ -256,14 +268,17 @@ func (c *Collector) Stop(ctx context.Context, reason string) error {
 		select {
 		case <-doneCh:
 		case <-time.After(30 * time.Second):
-			c.addError("等待轮询协程退出超时，可能存在数据写入竞争")
+			// 轮询协程未在 30s 内退出（通常卡在数据库写入）：
+			// 保持 stopping 阻止新会话，由协程最终退出时自愈状态（见 run）；
+			// 此处不碰写入缓冲，也不替代协程 flush，避免数据竞争
+			c.addError("等待轮询协程退出超时，最终数据将由该协程继续尝试写入")
+			if _, err := c.db.Pool.Exec(ctx,
+				`UPDATE sessions SET stopped_at = NOW(), stopped_reason = $1 WHERE id = $2`, reason, sessionID); err != nil {
+				return fmt.Errorf("更新会话结束状态失败: %w", err)
+			}
+			return errors.New("停止记录超时：轮询协程仍在退出中，其最终数据写入完成后状态将自动恢复")
 		}
 	}
-
-	// flush 剩余缓冲数据
-	flushCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	flushErr := c.flush(flushCtx, sessionID)
 
 	if _, err := c.db.Pool.Exec(ctx,
 		`UPDATE sessions SET stopped_at = NOW(), stopped_reason = $1 WHERE id = $2`, reason, sessionID); err != nil {
@@ -278,7 +293,7 @@ func (c *Collector) Stop(ctx context.Context, reason string) error {
 	c.status = StatusIdle
 	c.sessionID = 0
 	c.mu.Unlock()
-	return flushErr
+	return nil
 }
 
 // Status 返回采集器状态
@@ -351,16 +366,33 @@ func (c *Collector) Live() models.CollectorLive {
 
 // ---------- 内部 ----------
 
-// run 轮询主循环
+// run 轮询主循环。退出前（stopCh 触发）必须完成最终 flush——
+// Stop 通过等待 doneCh 保证这一点，且缓冲仅由本协程操作，无数据竞争。
 func (c *Collector) run(stopCh <-chan struct{}, doneCh chan struct{}, ticker *time.Ticker, sessionID int64, mtrURL, squaremapURL string) {
 	defer close(doneCh)
 	defer ticker.Stop()
+	// 自愈：Stop 等待超时（协程卡住）时由其代为保持的状态，由本协程退出时恢复
+	defer func() {
+		c.mu.Lock()
+		if c.stopping {
+			c.stopping = false
+			c.status = StatusIdle
+			c.sessionID = 0
+		}
+		c.mu.Unlock()
+	}()
 
 	// 立即执行第一次轮询
 	c.doPoll(context.Background(), stopCh, sessionID, mtrURL, squaremapURL)
 	for {
 		select {
 		case <-stopCh:
+			// 最终 flush：剩余缓冲数据在此写入（Stop 正等待 doneCh）
+			flushCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := c.flush(flushCtx, sessionID); err != nil {
+				c.addError("停止时最终写入失败: " + err.Error())
+			}
+			cancel()
 			return
 		case <-ticker.C:
 			c.doPoll(context.Background(), stopCh, sessionID, mtrURL, squaremapURL)

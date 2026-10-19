@@ -734,6 +734,18 @@ func importDatabase(database *db.DB, cfg *config.Config, coll *collector.Collect
 			serverError(c, fmt.Errorf("导入后结构校验失败: %w", err))
 			return
 		}
+
+		// 8. 序列兜底：导出文件自带 setval，但手工构造的快照可能没有；
+		//    此处按各表最大 ID 同步序列，避免后续新建会话/密码行主键冲突。
+		//    同步失败不影响已导入的数据（序列异常只影响后续 INSERT），忽略错误
+		for _, seq := range []struct{ table, col, seqName string }{
+			{"sessions", "id", "sessions_id_seq"},
+			{"admin_auth", "id", "admin_auth_id_seq"},
+		} {
+			_, _ = database.Pool.Exec(c.Request.Context(),
+				fmt.Sprintf(`SELECT setval('public.%s', (SELECT COALESCE(MAX(%s), 0) FROM public.%s) + 1, false)`,
+					seq.seqName, seq.col, seq.table))
+		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "output": string(output)})
 	}
 }

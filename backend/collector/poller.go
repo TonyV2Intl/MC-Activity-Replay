@@ -145,11 +145,14 @@ func (c *Collector) doPoll(ctx context.Context, stopCh <-chan struct{}, sessionI
 	if len(c.writeBuf) >= batchFlushSize || time.Since(c.lastFlushAt) >= batchFlushPeriod {
 		if err := c.flush(ctx, sessionID); err != nil {
 			c.addError("数据库写入失败: " + err.Error())
-			// 写入失败时保留缓冲，下次重试；缓冲过大则丢弃最旧数据防止内存膨胀
+			// 写入失败时保留缓冲，下次重试；缓冲过大则丢弃最旧的一批数据防止内存膨胀
+			// （两个缓冲保持一致：各保留最新一批，避免出现有位置无状态的错位数据）
 			if len(c.writeBuf) > batchFlushSize*50 {
 				c.addError("写入缓冲积压过多，丢弃最旧的一批数据")
 				c.writeBuf = c.writeBuf[len(c.writeBuf)-batchFlushSize:]
-				c.transitBuf = nil
+				if len(c.transitBuf) > batchFlushSize {
+					c.transitBuf = c.transitBuf[len(c.transitBuf)-batchFlushSize:]
+				}
 			}
 		}
 	}

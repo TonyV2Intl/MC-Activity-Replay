@@ -169,6 +169,11 @@ const consolePage = {
           if (hist.length > 3) hist.shift();
         }
       }
+      // 清理已下线玩家的历史，防止长时间记录时 Map 无限增长
+      const online = new Set(live.players.map(p => p.uuid));
+      for (const uuid of this.speedHistory.keys()) {
+        if (!online.has(uuid)) this.speedHistory.delete(uuid);
+      }
       this.updateLiveHint(live);
       const fields = this.liveFields || {};
       el.innerHTML = live.players.map(p => {
