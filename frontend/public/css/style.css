@@ -396,14 +396,24 @@ table.data tr.clickable { cursor: pointer; }
   justify-content: space-between;
 }
 
-#map { flex: 1; height: 100%; background: #0a0c10; }
+/* 地图区：默认撑满整个右侧；录制模式下 flex 居中，容器按比例横向顶满、上下留空 */
+#map-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+#map-container { position: relative; width: 100%; height: 100%; }
+#map { position: absolute; inset: 0; background: #0a0c10; }
 
-/* 回放时间戳（右上角固定，录制时保留） */
+/* 回放时间戳：#map-container 后代元素，绝对定位右上角，pointer-events:none 不挡地图操作 */
 .replay-timestamp {
-  position: fixed;
-  top: 14px;
-  right: 16px;
-  z-index: 1200;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
   background: rgba(10, 12, 16, 0.75);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -416,13 +426,14 @@ table.data tr.clickable { cursor: pointer; }
 
 .back-btn { margin-bottom: 4px; }
 
-/* ---------- 录制模式：隐藏所有 UI，只留地图与时间戳 ---------- */
-body.recording-mode .control-panel,
-body.recording-mode .topbar {
-  display: none !important;
+/* ---------- 录制模式：保留侧边栏，隐藏 Leaflet 控件，地图按比例居中 ---------- */
+body.recording-mode #map-container {
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
 }
-body.recording-mode #map { width: 100vw; }
-body.recording-mode .replay-timestamp {
-  top: 10px;
-  right: 10px;
-}
+body.recording-mode.recording-ratio-43 #map-container { aspect-ratio: 4 / 3; }
+/* 隐藏全部 Leaflet 控件（缩放按钮/归属等），避免录入画面 */
+body.recording-mode .leaflet-control-container { display: none !important; }

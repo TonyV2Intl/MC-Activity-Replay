@@ -35,6 +35,9 @@ const CHUNK_CONCURRENCY = 4; // 并行分块请求数
 const DASH_JUMP_BLOCKS = 1000;
 const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
 
+// 录制：区域就绪（REGION_READY）后的有效倒计时（秒），超时自动释放 stream 回到 RECORDING_MODE
+const RECORD_COUNTDOWN_SEC = 60;
+
 // tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields）
 const DEFAULT_TIP_FIELDS = { name: true, coords: true, point: true, speed: true, health: true, armor: true, station: true, route: true };
 
@@ -67,7 +70,12 @@ const replayPage = {
   rafId: null,
   lastFrameTs: null,
   scrubbing: false,         // 用户是否正在拖动进度条
-  recordingMode: false,
+  recordingMode: false,     // 是否处于录制模式（独立状态：侧边栏保留、隐藏 Leaflet 控件、显示录制面板）
+  recordState: 'off',       // 录制状态机：off | RECORDING_MODE | REGION_READY | RECORDING
+  recordStream: null,       // getDisplayMedia 获取的屏幕流（REGION_READY/RECORDING 期间保留，停止录制不释放）
+  recordCountdown: 60,      // 区域就绪后的有效倒计时（秒）
+  recordTimer: null,        // 倒计时定时器 id
+  recordRatio: '16:9',      // 录制画面比例：16:9 | 4:3
 
   pointTimes: [],           // 所有已加载轨迹点的去重时间戳（步进用）
 
@@ -358,9 +366,31 @@ const replayPage = {
       cb.addEventListener('change', () => this.setTipField(cb.value, cb.checked));
     });
 
+    // 录制模式：画面比例切换（仅非录制状态可用，切换只改容器尺寸）
+    document.querySelectorAll('input[name="record-ratio"]').forEach((r) => {
+      r.addEventListener('change', () => {
+        if (r.checked) this.setRecordRatio(r.value);
+      });
+    });
+
+    // 录制状态变化（开始/停止录制）→ 刷新面板与倒计时
     Recorder.onStateChange = (recording) => {
-      const btn = document.getElementById('btn-record');
-      if (btn) btn.textContent = recording ? '停止录制' : '开始录制';
+      if (recording) {
+        this.recordState = 'RECORDING';
+      } else if (this.recordState === 'RECORDING') {
+        // 录制结束并已下载：stream 仍有效 → 回到 REGION_READY 可再次录制（倒计时重置 60s）；
+        // stream 已被浏览器原生停止共享 → 回到 RECORDING_MODE 需重新获取
+        if (this.recordStream && this.recordStream.getVideoTracks().some(t => t.readyState === 'live')) {
+          this.recordState = 'REGION_READY';
+          this.resetRecordCountdown();
+          this.setRecordStatus('已下载；倒计时内可再次录制，无需重新获取');
+        } else {
+          this.recordState = 'RECORDING_MODE';
+          this.recordStream = null;
+          this.setRecordStatus('录制源已结束，请重新获取区域');
+        }
+      }
+      this.updateRecordPanel();
     };
   },
 
@@ -1239,8 +1269,8 @@ const replayPage = {
       bar.value = (this.t1 > this.t0) ? Math.round(((t - this.t0) / (this.t1 - this.t0)) * 100) : 0;
     }
 
-    // 右上角时间戳（录制时合成进视频）
-    const tsEl = document.getElementById('replay-timestamp');
+    // 右上角时间戳（#map-container 后代元素，录制时合成进视频）
+    const tsEl = document.getElementById('timestamp');
     if (tsEl) tsEl.textContent = fmtTime(t);
   },
 
@@ -1287,62 +1317,218 @@ const replayPage = {
     return normalizeYawAngle(yaw);
   },
 
-  /* ---------- 录制模式 ---------- */
-  /**
-   * 进入/退出录制模式：隐藏所有 UI 只留地图与时间戳。
-   * 按任务书要求，进入录制模式即同时启动录屏（弹出浏览器源选择框）。
+  /* ---------- 录制模式（独立状态） ----------
+   * 状态机：off → RECORDING_MODE → REGION_READY → RECORDING
+   *   off            正常回放（无录制面板）
+   *   RECORDING_MODE 录制模式中，未获取区域（可切比例）
+   *   REGION_READY   已获取 screen stream（裁剪或降级），60s 倒计时内可开始录制
+   *   RECORDING      MediaRecorder 录制中（禁比例切换与重新获取）
    */
   toggleRecordingMode() {
-    if (this.recordingMode) {
-      this.exitRecordingMode();
-    } else {
-      this.enterRecordingMode();
-    }
+    if (this.recordingMode) this.exitRecordingMode();
+    else this.enterRecordingMode();
   },
 
-  async enterRecordingMode() {
+  enterRecordingMode() {
     this.recordingMode = true;
+    this.recordState = 'RECORDING_MODE';
     document.body.classList.add('recording-mode');
     document.getElementById('btn-record-mode').textContent = '退出录制模式';
-    document.getElementById('btn-record').style.display = '';
+    document.getElementById('record-panel').style.display = '';
+    this.setRecordRatio('16:9'); // 比例复位（同时应用容器尺寸）
+    this.setRecordStatus('点击「获取录制区域」选择录制源');
+    this.updateRecordPanel();
+    // 布局变化后让 Leaflet 按新容器尺寸重算（保持中心点与缩放级别）
     setTimeout(() => this.map && this.map.invalidateSize(), 60);
-    // 进入录制模式即启动录屏（用户需在浏览器弹窗中选择"当前标签页"）。
-    // 失败（如用户取消选择屏幕源）时退出录制模式，避免界面停留在
-    // 控制面板全隐藏的状态（只能靠 Esc 恢复）
-    try {
-      await this.toggleRecord();
-    } catch (e) {
-      this.exitRecordingMode();
-      this.setLoadStatus('录屏启动失败: ' + e.message);
+  },
+
+  async exitRecordingMode() {
+    // 正在录制 → 先停止并下载（await 到 onstop 下载完成）
+    if (this.recordState === 'RECORDING') {
+      this.setRecordStatus('正在停止并下载…');
+      await Recorder.stop();
     }
-  },
-
-  exitRecordingMode() {
+    // 释放 stream、取消倒计时
+    this.releaseRecordStream();
+    this.cancelRecordTimer();
+    this.recordState = 'off';
     this.recordingMode = false;
-    document.body.classList.remove('recording-mode');
+    // 恢复默认视图：缩放按钮重现（移除 recording-mode 即恢复）、比例回 16:9、面板隐藏
+    document.body.classList.remove('recording-mode', 'recording-ratio-169', 'recording-ratio-43');
+    this.recordRatio = '16:9';
+    document.querySelectorAll('input[name="record-ratio"]').forEach(r => { r.checked = r.value === '16:9'; });
     document.getElementById('btn-record-mode').textContent = '进入录制模式';
-    document.getElementById('btn-record').style.display = 'none';
-    if (Recorder.isRecording()) Recorder.stop();
+    document.getElementById('record-panel').style.display = 'none';
+    this.setRecordStatus('点击「获取录制区域」选择录制源');
     setTimeout(() => this.map && this.map.invalidateSize(), 60);
   },
 
-  /** 开始/停止录屏（停止后自动下载 webm） */
-  async toggleRecord() {
-    const btn = document.getElementById('btn-record');
-    if (Recorder.isRecording()) {
-      Recorder.stop();
+  /**
+   * 切换画面比例（仅非录制状态可用）：只改变 #map-container 容器尺寸，
+   * 不调用 fitBounds，地图中心点与缩放级别保持不变，切换后 invalidateSize()。
+   */
+  setRecordRatio(ratio) {
+    if (this.recordState === 'RECORDING') return;
+    this.recordRatio = ratio === '4:3' ? '4:3' : '16:9';
+    document.body.classList.remove('recording-ratio-169', 'recording-ratio-43');
+    document.body.classList.add(this.recordRatio === '4:3' ? 'recording-ratio-43' : 'recording-ratio-169');
+    document.querySelectorAll('input[name="record-ratio"]').forEach(r => { r.checked = r.value === this.recordRatio; });
+    setTimeout(() => this.map && this.map.invalidateSize(), 30);
+  },
+
+  /**
+   * 获取录制区域：getDisplayMedia（preferCurrentTab + selfBrowserSurface）+
+   * RestrictionTarget 裁剪到 #map-container（Edge 132+）。
+   * - 裁剪成功 → REGION_READY，启动 60s 倒计时
+   * - 不支持 RestrictionTarget 或裁剪失败（含用户选错源）→ 降级保留未裁剪的原始
+   *   stream（录制整个标签页），仍进入 REGION_READY
+   * - 用户取消 → 停留 RECORDING_MODE 可重试
+   * REGION_READY 下重新获取：先释放旧 stream 再完整重走流程并重置倒计时。
+   */
+  async acquireRegion() {
+    if (this.recordState === 'RECORDING') return; // 录制中禁用（按钮亦禁用，双保险）
+    if (this.recordStream) this.releaseRecordStream(); // 重取：先释放旧 stream
+    this.cancelRecordTimer();
+    this.setRecordStatus('等待选择录制源…');
+    this.updateRecordPanel();
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30 },
+        selfBrowserSurface: 'include',
+        preferCurrentTab: true,
+        audio: false,
+      });
+    } catch (e) {
+      // 用户取消选择 → 停留 RECORDING_MODE 可重试
+      this.recordState = this.recordingMode ? 'RECORDING_MODE' : 'off';
+      this.setRecordStatus(e && e.name === 'NotAllowedError'
+        ? '已取消获取，可重试'
+        : '获取录制源失败: ' + (e && e.message ? e.message : e));
+      this.updateRecordPanel();
       return;
     }
-    btn.disabled = true;
+
+    // 优先 RestrictionTarget 裁剪（Edge 132+）；不支持或失败（含选错源）→ 降级保留原始 stream
+    let cropped = false;
     try {
-      await Recorder.start();
-      btn.textContent = '停止录制';
+      const track = stream.getVideoTracks()[0];
+      if (window.RestrictionTarget && typeof RestrictionTarget.fromElement === 'function' &&
+          typeof track.restrictTo === 'function') {
+        const restriction = await RestrictionTarget.fromElement(document.getElementById('map-container'));
+        await track.restrictTo(restriction);
+        cropped = true;
+      }
     } catch (e) {
-      btn.textContent = '开始录制';
-      throw e;
-    } finally {
-      btn.disabled = false;
+      cropped = false;
     }
+
+    this.recordStream = stream;
+    // 用户在浏览器原生 UI 停止共享时同步回收
+    stream.getVideoTracks()[0].addEventListener('ended', () => this.onRecordStreamEnded());
+    this.recordState = 'REGION_READY';
+    this.resetRecordCountdown();
+    this.updateRecordPanel();
+    this.setRecordStatus(cropped
+      ? '录制区域已就绪（仅地图区域，含时间戳），请在倒计时内开始录制'
+      : '将录制整个标签页，请后期手动裁剪');
+  },
+
+  /** 开始录制：MediaRecorder(stream) + start，不自动播放回放 */
+  startRecording() {
+    if (this.recordState !== 'REGION_READY' || !this.recordStream) return;
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    const ts = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' +
+      p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    Recorder.start(this.recordStream, 'replay-' + this.session.id + '-' + ts + '.webm');
+    this.recordState = 'RECORDING';
+    this.updateRecordPanel();
+    this.setRecordStatus('录制中…（回放继续播放，可随时拖动/缩放地图）');
+  },
+
+  /** 停止录制：onstop 合成 Blob 自动下载，随后回到 REGION_READY（倒计时重置）可再次录制 */
+  stopRecording() {
+    if (this.recordState !== 'RECORDING') return;
+    Recorder.stop(); // onstop → 下载 → onStateChange(false) 复位状态
+  },
+
+  /** 重置并启动区域倒计时（60s） */
+  resetRecordCountdown() {
+    this.cancelRecordTimer();
+    this.recordCountdown = RECORD_COUNTDOWN_SEC;
+    this.updateRecordCountdown();
+    this.recordTimer = setInterval(() => {
+      this.recordCountdown--;
+      this.updateRecordCountdown();
+      if (this.recordCountdown <= 0) this.expireRecordRegion();
+    }, 1000);
+  },
+
+  cancelRecordTimer() {
+    if (this.recordTimer) { clearInterval(this.recordTimer); this.recordTimer = null; }
+  },
+
+  /** 倒计时超时：停止所有 track 释放 stream，回到 RECORDING_MODE */
+  expireRecordRegion() {
+    this.cancelRecordTimer();
+    this.releaseRecordStream();
+    if (this.recordState === 'REGION_READY') this.recordState = 'RECORDING_MODE';
+    this.updateRecordPanel();
+    this.setRecordStatus('区域已失效（超过 ' + RECORD_COUNTDOWN_SEC + ' 秒未开始录制），请重新获取');
+  },
+
+  /** stream 被浏览器原生停止共享时回收 */
+  onRecordStreamEnded() {
+    if (this.recordState === 'REGION_READY') {
+      this.expireRecordRegion();
+      this.setRecordStatus('录制源已停止，请重新获取区域');
+    } else if (this.recordState === 'RECORDING') {
+      // MediaRecorder 会自动停止 → onstop 下载 → onStateChange(false) 处理状态
+      this.cancelRecordTimer();
+      this.recordStream = null;
+    }
+  },
+
+  /** 释放 screen stream（停止全部 track） */
+  releaseRecordStream() {
+    if (this.recordStream) {
+      this.recordStream.getTracks().forEach(t => t.stop());
+      this.recordStream = null;
+    }
+  },
+
+  /** 按 recordState 刷新录制面板控件状态 */
+  updateRecordPanel() {
+    const recording = this.recordState === 'RECORDING';
+    const ready = this.recordState === 'REGION_READY';
+    document.querySelectorAll('input[name="record-ratio"]').forEach(r => { r.disabled = recording; });
+    const btnGet = document.getElementById('btn-get-region');
+    if (btnGet) {
+      btnGet.disabled = recording;
+      btnGet.textContent = ready ? '重新获取区域' : '获取录制区域';
+    }
+    const btnStart = document.getElementById('btn-start-record');
+    if (btnStart) btnStart.disabled = !ready;
+    const btnStop = document.getElementById('btn-stop-record');
+    if (btnStop) btnStop.disabled = !recording;
+    const cd = document.getElementById('record-countdown');
+    if (cd) cd.style.display = (ready || recording) ? '' : 'none';
+    this.updateRecordCountdown();
+  },
+
+  updateRecordCountdown() {
+    const cd = document.getElementById('record-countdown');
+    if (!cd) return;
+    cd.textContent = (this.recordState === 'REGION_READY' || this.recordState === 'RECORDING')
+      ? '区域有效倒计时：' + this.recordCountdown + ' 秒'
+      : '';
+  },
+
+  setRecordStatus(text) {
+    const el = document.getElementById('record-status');
+    if (el) el.textContent = text;
   },
 };
 
