@@ -582,7 +582,7 @@ const replayPage = {
   },
 
   /**
-   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前点位序号 + 当前时刻的血量/护甲与站点/线路名称。
+   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前点位序号 + 当前坐标 + 当前时刻的血量/护甲与站点/线路名称。
    * 各栏目由 tipFields 开关控制（名字/坐标/点位/速度/血量/护甲/站点/线路），偏好持久化在 localStorage。
    * 坐标由 marker 当前渲染位置经 latLngToBlock 逆换算为方块坐标（取整显示）；
    * 点位为「当前数据点序号/总点数」（1-based）；血量/护甲未采集时不显示；仅显示站名/线路名（不显示 ID）；
@@ -596,10 +596,6 @@ const replayPage = {
     if (f.name) {
       html += '<span style="color:' + track.color + '">' + esc(track.name) + '</span>';
     }
-    if (f.coords && marker) {
-      const b = latLngToBlock(marker.getLatLng());
-      html += '<br><span class="tip-sub">坐标: ' + Math.round(b.x) + ', ' + Math.round(b.z) + '</span>';
-    }
     // 当前数据点序号 / 总点数（1-based，形如 245/2705）：
     // 取当前时刻最后一个 ≤ t 的点；早于首点显示 1，晚于末点显示总点数
     if (f.point) {
@@ -607,6 +603,10 @@ const replayPage = {
       const n = track.times.length;
       const cur = loc.after ? n : Math.min(n, loc.i + 1);
       html += '<br><span class="tip-sub">点位: ' + cur + '/' + n + '</span>';
+    }
+    if (f.coords && marker) {
+      const b = latLngToBlock(marker.getLatLng());
+      html += '<br><span class="tip-sub">坐标: ' + Math.round(b.x) + ', ' + Math.round(b.z) + '</span>';
     }
     // 速度推算（格/s）
     if (f.speed) {
