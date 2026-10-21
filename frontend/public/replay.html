@@ -32,6 +32,7 @@
           <span>tooltip 显示：</span>
           <label><input type="checkbox" class="tip-field" value="name" checked> 名字</label>
           <label><input type="checkbox" class="tip-field" value="coords" checked> 坐标</label>
+          <label><input type="checkbox" class="tip-field" value="point" checked> 点位</label>
           <label><input type="checkbox" class="tip-field" value="speed" checked> 速度</label>
           <label><input type="checkbox" class="tip-field" value="health" checked> 血量</label>
           <label><input type="checkbox" class="tip-field" value="armor" checked> 护甲</label>
@@ -50,6 +51,10 @@
         <div class="check-group" title="浏览器无法直连瓦片服务器（跨域/内网/防火墙）时，让瓦片经本系统服务器中转下载">
           <label><input type="checkbox" id="check-tile-proxy"> <span>瓦片经服务器代理</span></label>
           <span class="hint" id="tile-source-hint"></span>
+        </div>
+        <div class="check-group" title="勾选后解除回放地图的最小/最大缩放等级限制：可缩小到整个世界之外、放大到瓦片原生等级之上（超出部分为放大显示），默认不勾选">
+          <label><input type="checkbox" id="check-unlimited-zoom"> <span>取消地图缩放等级限制</span></label>
+          <span class="hint" id="zoom-limit-hint"></span>
         </div>
         <div class="hint" style="margin-top: 4px;">
           点击「跟随」使画面中心锁定该玩家移动，拖动地图或再次点击可取消

@@ -36,7 +36,11 @@ const DASH_JUMP_BLOCKS = 1000;
 const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
 
 // tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields）
-const DEFAULT_TIP_FIELDS = { name: true, coords: true, speed: true, health: true, armor: true, station: true, route: true };
+const DEFAULT_TIP_FIELDS = { name: true, coords: true, point: true, speed: true, health: true, armor: true, station: true, route: true };
+
+// 取消地图缩放等级限制时的缩放范围（Leaflet 支持负缩放；超出瓦片原生等级的部分为放大显示）
+const UNLIMITED_ZOOM_MIN = -6;
+const UNLIMITED_ZOOM_MAX = 20;
 
 // 最多显示轨迹点数量：默认 1200 ≈ 当前时刻前后各 10 分钟（按每秒 1 个数据点估算）。
 // 勾选后仅绘制以当前时刻为中心、总数不超过该值的轨迹点，路线随播放动态伸缩
@@ -73,6 +77,7 @@ const replayPage = {
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
 
   dashJump: true,           // 超 1000 格跳跃段是否用虚线连接（localStorage 持久化）
+  unlimitedZoom: false,     // 是否取消地图最小/最大缩放等级限制（localStorage 持久化，默认关）
   maxPointsEnabled: false,  // 是否限制最多显示轨迹点数量（localStorage 持久化，默认关）
   maxPoints: DEFAULT_MAX_POINTS, // 最多显示的轨迹点数量（默认 1200 ≈ 前后各 10 分钟）
   playerColors: {},         // uuid -> '#rrggbb' 用户指定的轨迹颜色（localStorage 持久化）
@@ -101,6 +106,7 @@ const replayPage = {
       this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
       this.tileProxy = localStorage.getItem('mc-replay.tileProxy') === '1';
       this.dashJump = localStorage.getItem('mc-replay.dashJump') !== '0';
+      this.unlimitedZoom = localStorage.getItem('mc-replay.unlimitedZoom') === '1';
       this.maxPointsEnabled = localStorage.getItem('mc-replay.maxPointsEnabled') === '1';
       const savedMaxPoints = parseInt(localStorage.getItem('mc-replay.maxPoints') || '', 10);
       this.maxPoints = (savedMaxPoints >= MIN_MAX_POINTS) ? savedMaxPoints : DEFAULT_MAX_POINTS;
@@ -201,6 +207,8 @@ const replayPage = {
       this.session.tile_zoom || 3, TileConfig.extraZoom || 2);
     this.tileLayer.addTo(this.map);
     this.updateTileHint();
+    // 新图层带默认层级限制，需按当前「取消缩放限制」偏好重新应用
+    this.applyZoomLimits();
   },
 
   /** 切换「瓦片经服务器代理」（localStorage 持久化，切换后立即重建图层） */
@@ -210,6 +218,49 @@ const replayPage = {
       localStorage.setItem('mc-replay.tileProxy', this.tileProxy ? '1' : '0');
     } catch (e) { /* 隐私模式等场景忽略 */ }
     this.buildTileLayer();
+  },
+
+  /**
+   * 切换「取消地图缩放等级限制」（持久化到 localStorage）。
+   * 地图与瓦片图层的 minZoom/maxZoom 都需放宽：地图选项决定用户可缩放到哪一级，
+   * 图层选项超界时 GridLayer._setView 会将 tileZoom 置 undefined 导致整层不显示。
+   */
+  setUnlimitedZoom(on) {
+    this.unlimitedZoom = !!on;
+    try {
+      localStorage.setItem('mc-replay.unlimitedZoom', this.unlimitedZoom ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.applyZoomLimits();
+  },
+
+  /** 按 unlimitedZoom 应用地图与瓦片图层的缩放等级范围（含提示文案刷新） */
+  applyZoomLimits() {
+    if (!this.map) return;
+    const min = this.unlimitedZoom ? UNLIMITED_ZOOM_MIN : 0;
+    const max = this.unlimitedZoom ? UNLIMITED_ZOOM_MAX : TileConfig.maxZoom + (TileConfig.extraZoom || 2);
+    // setMinZoom/setMaxZoom 在当前缩放已超界时会自动纠正（Leaflet 内部处理）
+    this.map.setMinZoom(min);
+    this.map.setMaxZoom(max);
+    if (this.tileLayer) {
+      this.tileLayer.options.minZoom = min;
+      this.tileLayer.options.maxZoom = max;
+      // redraw 会按新的原生钳制重算 _tileZoom 并刷新瓦片（绕过 _setView 的层级检查）
+      this.tileLayer.redraw();
+    }
+    this.updateZoomHint();
+  },
+
+  /** 刷新缩放限制提示文案（当前生效的范围） */
+  updateZoomHint() {
+    const el = document.getElementById('zoom-limit-hint');
+    if (!el) return;
+    if (this.unlimitedZoom) {
+      el.textContent = '已取消限制（' + UNLIMITED_ZOOM_MIN + ' 至 ' + UNLIMITED_ZOOM_MAX +
+        ' 级），超出瓦片原生等级的部分为放大显示';
+    } else {
+      el.textContent = '默认限制 0 至 ' + (TileConfig.maxZoom + (TileConfig.extraZoom || 2)) +
+        ' 级（跟随会话瓦片配置）';
+    }
   },
 
   /** 更新瓦片来源提示（代理开关/镜像地址变化时调用） */
@@ -262,6 +313,13 @@ const replayPage = {
     if (proxyCb) {
       proxyCb.checked = this.tileProxy;
       proxyCb.addEventListener('change', () => this.setTileProxy(proxyCb.checked));
+    }
+
+    // 取消地图缩放等级限制（偏好持久化到 localStorage，切换后即时调整地图与瓦片图层层级范围）
+    const zoomCb = document.getElementById('check-unlimited-zoom');
+    if (zoomCb) {
+      zoomCb.checked = this.unlimitedZoom;
+      zoomCb.addEventListener('change', () => this.setUnlimitedZoom(zoomCb.checked));
     }
 
     // 跳跃段虚线连接开关（偏好持久化到 localStorage，切换后重建全部已加载轨迹）
@@ -524,10 +582,11 @@ const replayPage = {
   },
 
   /**
-   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前时刻的血量/护甲与站点/线路名称。
-   * 各栏目由 tipFields 开关控制（名字/坐标/速度/血量/护甲/站点/线路），偏好持久化在 localStorage。
+   * 组装 tooltip 内容：玩家名（专属颜色）+ 当前坐标 + 当前点位序号 + 当前时刻的血量/护甲与站点/线路名称。
+   * 各栏目由 tipFields 开关控制（名字/坐标/点位/速度/血量/护甲/站点/线路），偏好持久化在 localStorage。
    * 坐标由 marker 当前渲染位置经 latLngToBlock 逆换算为方块坐标（取整显示）；
-   * 血量/护甲未采集时不显示；仅显示站名/线路名（不显示 ID）；名称表未加载/未收录时回退为原始 ID。
+   * 点位为「当前数据点序号/总点数」（1-based）；血量/护甲未采集时不显示；仅显示站名/线路名（不显示 ID）；
+   * 名称表未加载/未收录时回退为原始 ID。
    * @param {object} track  track 对象
    * @param {L.Marker} [marker] 头像标记（取其当前位置换算坐标）
    */
@@ -540,6 +599,14 @@ const replayPage = {
     if (f.coords && marker) {
       const b = latLngToBlock(marker.getLatLng());
       html += '<br><span class="tip-sub">坐标: ' + Math.round(b.x) + ', ' + Math.round(b.z) + '</span>';
+    }
+    // 当前数据点序号 / 总点数（1-based，形如 245/2705）：
+    // 取当前时刻最后一个 ≤ t 的点；早于首点显示 1，晚于末点显示总点数
+    if (f.point) {
+      const loc = this.locate(track, this.currentTime);
+      const n = track.times.length;
+      const cur = loc.after ? n : Math.min(n, loc.i + 1);
+      html += '<br><span class="tip-sub">点位: ' + cur + '/' + n + '</span>';
     }
     // 速度推算（格/s）
     if (f.speed) {
