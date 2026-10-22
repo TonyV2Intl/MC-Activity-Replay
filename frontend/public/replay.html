@@ -43,6 +43,12 @@
           <label><input type="checkbox" id="check-dash-jump" checked> <span>超 1000 格跳跃段用虚线连接</span></label>
           <span class="hint">关闭后跳跃段与普通轨迹一样用实线绘制</span>
         </div>
+        <div class="check-group" title="选择轨迹上方向箭头的显示方式（偏好记忆在浏览器本地）">
+          <span>方向箭头：</span>
+          <label><input type="radio" name="arrow-mode" value="all" checked> 一直显示</label>
+          <label><input type="radio" name="arrow-mode" value="notPassed"> 仅未走过显示</label>
+          <label><input type="radio" name="arrow-mode" value="none"> 一直隐藏</label>
+        </div>
         <div class="check-group" title="勾选后仅绘制当前时刻前后指定数量的轨迹点（默认 1200 ≈ 前后各 10 分钟），路线随播放动态伸缩，避免长轨迹混乱；不勾选则显示完整轨迹">
           <label><input type="checkbox" id="check-max-points"> <span>最多显示轨迹点数量</span></label>
           <input type="number" id="input-max-points" min="10" step="100" value="1200">

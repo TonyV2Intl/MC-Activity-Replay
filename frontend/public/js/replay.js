@@ -35,6 +35,9 @@ const CHUNK_CONCURRENCY = 4; // 并行分块请求数
 const DASH_JUMP_BLOCKS = 1000;
 const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
 
+// 方向箭头显示模式（localStorage 持久化，键：mc-replay.arrowMode）
+const ARROW_MODES = ['all', 'notPassed', 'none']; // all=一直显示（默认）| notPassed=仅未走过的路径 | none=一直隐藏
+
 // 录制：区域就绪（REGION_READY）后的有效倒计时（秒），超时自动释放 stream 回到 RECORDING_MODE
 const RECORD_COUNTDOWN_SEC = 60;
 
@@ -85,6 +88,7 @@ const replayPage = {
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
 
   dashJump: true,           // 超 1000 格跳跃段是否用虚线连接（localStorage 持久化）
+  arrowMode: 'all',         // 方向箭头显示模式：all=一直显示（默认）| notPassed=仅未走过 | none=一直隐藏
   unlimitedZoom: false,     // 是否取消地图最小/最大缩放等级限制（localStorage 持久化，默认关）
   maxPointsEnabled: false,  // 是否限制最多显示轨迹点数量（localStorage 持久化，默认关）
   maxPoints: DEFAULT_MAX_POINTS, // 最多显示的轨迹点数量（默认 1200 ≈ 前后各 10 分钟）
@@ -114,6 +118,8 @@ const replayPage = {
       this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
       this.tileProxy = localStorage.getItem('mc-replay.tileProxy') === '1';
       this.dashJump = localStorage.getItem('mc-replay.dashJump') !== '0';
+      const savedArrowMode = localStorage.getItem('mc-replay.arrowMode');
+      this.arrowMode = ARROW_MODES.includes(savedArrowMode) ? savedArrowMode : 'all';
       this.unlimitedZoom = localStorage.getItem('mc-replay.unlimitedZoom') === '1';
       this.maxPointsEnabled = localStorage.getItem('mc-replay.maxPointsEnabled') === '1';
       const savedMaxPoints = parseInt(localStorage.getItem('mc-replay.maxPoints') || '', 10);
@@ -336,6 +342,15 @@ const replayPage = {
       dashCb.checked = this.dashJump;
       dashCb.addEventListener('change', () => this.setDashJump(dashCb.checked));
     }
+
+    // 方向箭头显示模式（偏好持久化到 localStorage，切换后重绘即时生效）
+    const arrowRadios = document.querySelectorAll('input[name="arrow-mode"]');
+    arrowRadios.forEach((r) => {
+      r.checked = r.value === this.arrowMode;
+      r.addEventListener('change', () => {
+        if (r.checked) this.setArrowMode(r.value);
+      });
+    });
 
     // 最多显示轨迹点数量（偏好持久化到 localStorage；切换/改值即时生效，无需重建轨迹）
     const maxCb = document.getElementById('check-max-points');
@@ -849,6 +864,9 @@ const replayPage = {
       // 仍沿 passed+notPassed 绘制），线条渲染交由下方按 run 分组的自建 polyline
       track.tp.passedLine.setStyle({ opacity: 0 });
       track.tp.notPassedLine.setStyle({ opacity: 0 });
+      // 「一直隐藏」模式下加载瞬间即清空箭头（插件默认全轨迹铺箭头，
+      // render() 每帧会按模式重设，这里保证首帧前即符合偏好）
+      if (this.arrowMode === 'none') track.tp.polylineDecorator.setPaths([]);
 
       // 每个 run 两条 polyline：走过部分=玩家色，未走部分=半透明白；
       // 跳跃段（dash=true）加 dashArray 虚线
@@ -964,6 +982,21 @@ const replayPage = {
       localStorage.setItem('mc-replay.dashJump', this.dashJump ? '1' : '0');
     } catch (e) { /* 隐私模式等场景忽略 */ }
     for (const uuid of [...this.tracks.keys()]) this.rebuildTrack(uuid);
+  },
+
+  /**
+   * 切换方向箭头显示模式（localStorage 持久化）：
+   *   all       一直显示（默认）：窗口内全部路径（走过+未走）铺箭头
+   *   notPassed 仅未走过的路径显示箭头：从当前时刻所在点到窗口末端
+   *   none      一直隐藏
+   * 箭头路径在 render() 内按模式重设，切换后只需重绘，无需重建轨迹图层。
+   */
+  setArrowMode(mode) {
+    this.arrowMode = ARROW_MODES.includes(mode) ? mode : 'all';
+    try {
+      localStorage.setItem('mc-replay.arrowMode', this.arrowMode);
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.render();
   },
 
   /**
@@ -1171,10 +1204,20 @@ const replayPage = {
           wLo = Math.max(0, lo);
           wHi = hi;
         }
-        // 方向箭头装饰同步裁剪到窗口：插件的 setProgress 每帧都会用全轨迹的
-        // passed+notPassed 覆盖装饰路径，故须在其后重新设置为窗口路径，
-        // 否则窗口外的轨迹上仍会铺满箭头
-        if (wLo > 0 || wHi < track.times.length - 1) {
+        // 方向箭头装饰：插件的 setProgress 每帧都会用全轨迹 passed+notPassed 覆盖
+        // 装饰路径，且 progress 未变化时整个 setProgress 会跳过重绘，因此三个模式
+        // 都在此处显式重设装饰路径（与「最多显示轨迹点」的窗口裁剪叠加）：
+        //   all       窗口内全部路径（走过+未走）铺箭头；无窗口时为整条轨迹，
+        //             与插件默认 passed+notPassed 拼接等价
+        //   notPassed 仅未走过的路径铺箭头：从当前时刻所在点到窗口末端
+        //   none      空路径（不绘制任何箭头）
+        if (this.arrowMode === 'none') {
+          track.tp.polylineDecorator.setPaths([]);
+        } else if (this.arrowMode === 'notPassed') {
+          // 未走部分起点：当前时刻所在点（before → 窗口起点；after → 已全部走过）
+          const from = loc.after ? wHi + 1 : Math.max(wLo, loc.i);
+          track.tp.polylineDecorator.setPaths(from > wHi ? [] : [track.latlngs.slice(from, wHi + 1)]);
+        } else {
           track.tp.polylineDecorator.setPaths([track.latlngs.slice(wLo, wHi + 1)]);
         }
         // 更新按 run 分组的折线：D = 当前累积距离（haversine），
