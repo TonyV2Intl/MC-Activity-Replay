@@ -139,6 +139,7 @@ mc-activity-replay/
         ├── login.html      # 登录
         ├── replay.html     # 回放页
         ├── css/style.css
+        ├── fonts/          # 本地托管 JetBrains Mono woff2（latin 子集，400/700，无外部 CDN 依赖）
         └── js/
             ├── api.js      # API 封装 / UUID 格式化 / 时间格式化
             ├── auth.js     # 登录态守卫
@@ -146,7 +147,7 @@ mc-activity-replay/
             ├── console.js  # 控制台逻辑
             ├── session.js  # 会话管理逻辑
             ├── replay.js   # 回放播放引擎
-            ├── recorder.js # getDisplayMedia + MediaRecorder 录屏
+            ├── recorder.js # MediaRecorder 编码与下载（screen stream 由 replay.js 区域获取流程注入）
             └── leaflet-trackplayer.js # 本地托管的轨迹播放插件 v2.0.3
 ```
 

@@ -1,5 +1,23 @@
 /* ========== Minecraft 活动记录与回放系统 — 全局样式 ========== */
 
+/* JetBrains Mono：本地托管（woff2，latin 子集，随前端静态文件分发，无外部 CDN 依赖）。
+ * 仅覆盖数字/基本拉丁（时间戳、坐标、计时显示均为 0-9 与分隔符），两个文件共约 43KB。
+ * 回放时间戳使用 700 字重（白色加粗），其余等宽场景用 400。 */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-700.woff2") format("woff2");
+}
+
 :root {
   --bg: #12141a;
   --bg-panel: #1b1e26;
@@ -204,7 +222,7 @@ table.data tr.clickable { cursor: pointer; }
 }
 .live-player .info { line-height: 1.4; min-width: 0; }
 .live-player .name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
-.live-player .coords { color: var(--text-dim); font-size: 12px; font-family: ui-monospace, monospace; }
+.live-player .coords { color: var(--text-dim); font-size: 12px; font-family: "JetBrains Mono", ui-monospace, monospace; }
 .live-player .transit { color: var(--text-dim); font-size: 12px; }
 
 /* 速度推算模式选择（回放页与控制台实时监控共用） */
@@ -241,7 +259,7 @@ table.data tr.clickable { cursor: pointer; }
 .error-log {
   max-height: 180px;
   overflow-y: auto;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   background: var(--bg-panel-2);
   border: 1px solid var(--border);
@@ -389,7 +407,7 @@ table.data tr.clickable { cursor: pointer; }
 .playback-controls .row { display: flex; align-items: center; gap: 8px; }
 .playback-controls input[type="range"] { flex: 1; accent-color: var(--accent); }
 .time-display {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   color: var(--text-dim);
   display: flex;
@@ -408,7 +426,8 @@ table.data tr.clickable { cursor: pointer; }
 #map-container { position: relative; width: 100%; height: 100%; }
 #map { position: absolute; inset: 0; background: #0a0c10; }
 
-/* 回放时间戳：#map-container 后代元素，绝对定位右上角，pointer-events:none 不挡地图操作 */
+/* 回放时间戳：#map-container 后代元素，绝对定位右上角，pointer-events:none 不挡地图操作。
+ * 白色加粗（700）JetBrains Mono，保证压进视频后依然清晰 */
 .replay-timestamp {
   position: absolute;
   top: 10px;
@@ -418,9 +437,13 @@ table.data tr.clickable { cursor: pointer; }
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 14px;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 16px;
-  color: var(--accent);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "zero"; /* 斜线零：0 与 O 不混淆 */
+  color: #ffffff;
   pointer-events: none;
 }
 
