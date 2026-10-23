@@ -3,8 +3,9 @@
  * screen stream 由回放页「获取录制区域」流程获取（getDisplayMedia + RestrictionTarget 裁剪），
  * 本模块只负责编码与下载：start(stream, baseName) → stop() → onstop 合成 Blob 自动下载。
  *
- * 编码格式：优先 MP4/H.264（Chrome/Edge 107+，兼容性最好、播放器/剪辑软件通用），
- * 不支持则回退 WebM/VP9 → WebM。文件名后缀与 Blob 类型跟随实际选定的容器。
+ * 编码格式：仅 MP4/H.264（Chrome/Edge 107+，兼容性最好、播放器/剪辑软件通用），
+ * 按 avc1.42E01E（Baseline）→ avc1 → mp4 优先级探测；浏览器均不支持时拒绝启动，
+ * 由调用方提示用户。文件名固定 .mp4，Blob 容器固定 video/mp4。
  */
 
 const Recorder = {
@@ -18,14 +19,12 @@ const Recorder = {
     return !!this.mediaRecorder && this.mediaRecorder.state === 'recording';
   },
 
-  /** 按优先级选择编码格式：MP4/H.264 → WebM/VP9 → WebM */
+  /** 按优先级选择编码格式：仅 MP4/H.264，均不支持返回空串 */
   pickMimeType() {
     const candidates = [
       'video/mp4;codecs=avc1.42E01E',  // H.264 Baseline（兼容性最好）
       'video/mp4;codecs=avc1',
       'video/mp4',
-      'video/webm;codecs=vp9',
-      'video/webm',
     ];
     for (const m of candidates) {
       try {
@@ -39,22 +38,22 @@ const Recorder = {
    * 用已获取的 screen stream 开始录制（不负责获取 stream）。
    * @param {MediaStream} stream getDisplayMedia 得到的屏幕流
    * @param {string} baseName 下载文件名（不含后缀，如 replay-2-20261023-174210）
+   * @returns {boolean} true=已开始录制；false=浏览器不支持 MP4/H.264，未启动
    */
   start(stream, baseName) {
-    if (this.isRecording()) return;
+    if (this.isRecording()) return false;
     this.mimeType = this.pickMimeType();
-    const isMp4 = this.mimeType.indexOf('video/mp4') === 0;
-    this.fileName = (baseName || 'replay') + (isMp4 ? '.mp4' : '.webm');
-    const opts = this.mimeType ? { mimeType: this.mimeType } : {};
-    this.mediaRecorder = new MediaRecorder(stream, Object.assign({
+    if (!this.mimeType) return false;  // 不支持 MP4/H.264，拒绝启动（不回退 WebM/VP9）
+    this.fileName = (baseName || 'replay') + '.mp4';
+    this.mediaRecorder = new MediaRecorder(stream, {
+      mimeType: this.mimeType,
       videoBitsPerSecond: 8000000,
-    }, opts));
+    });
     this.chunks = [];
     this.mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) this.chunks.push(e.data); };
     this.mediaRecorder.onstop = () => {
-      // 合成 Blob 并自动下载；容器类型跟随实际编码（mp4/webm）
-      const container = this.mimeType.indexOf('video/mp4') === 0 ? 'video/mp4' : 'video/webm';
-      const blob = new Blob(this.chunks, { type: container });
+      // 合成 Blob 并自动下载；容器固定 MP4
+      const blob = new Blob(this.chunks, { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -69,6 +68,7 @@ const Recorder = {
     };
     this.mediaRecorder.start(1000);
     if (this.onStateChange) this.onStateChange(true);
+    return true;
   },
 
   /**

@@ -1470,14 +1470,18 @@ const replayPage = {
   },
 
   /** 开始录制：MediaRecorder(stream) + start，不自动播放回放。
-   *  文件名后缀由 Recorder 按实际编码容器追加（.mp4 / .webm） */
+   *  编码仅 MP4/H.264；浏览器不支持时 Recorder.start 返回 false，停留在 REGION_READY */
   startRecording() {
     if (this.recordState !== 'REGION_READY' || !this.recordStream) return;
     const d = new Date();
     const p = n => String(n).padStart(2, '0');
     const ts = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' +
       p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
-    Recorder.start(this.recordStream, 'replay-' + this.session.id + '-' + ts);
+    const ok = Recorder.start(this.recordStream, 'replay-' + this.session.id + '-' + ts);
+    if (!ok) {
+      this.setRecordStatus('当前浏览器不支持 MP4/H.264 录制，无法开始录制（请使用 Chrome/Edge 107+ 或新版 Firefox/Safari）');
+      return;
+    }
     this.recordState = 'RECORDING';
     this.updateRecordPanel();
     this.setRecordStatus('录制中…（回放继续播放，可随时拖动/缩放地图）');
