@@ -31,8 +31,10 @@ const CHUNK_SIZE = 2000;   // 与后端默认分页一致
 const CHUNK_CONCURRENCY = 4; // 并行分块请求数
 
 // 相邻两个数据点间方块距离超过该阈值判定为“跳跃段”（传送 / 跨区域重连），
-// 用虚线绘制以区别于正常步行轨迹
-const DASH_JUMP_BLOCKS = 1000;
+// 开启虚线连接时用虚线绘制以区别于正常步行轨迹；阈值可调（默认 1000 格，
+// localStorage 持久化，键：mc-replay.dashJumpBlocks）
+const DEFAULT_DASH_JUMP_BLOCKS = 1000;
+const MIN_DASH_JUMP_BLOCKS = 1;
 const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩放变化）
 
 // 方向箭头显示模式（localStorage 持久化，键：mc-replay.arrowMode）
@@ -45,9 +47,9 @@ const DEFAULT_TIP_FIELDS = { name: true, coords: true, point: true, speed: true,
 const UNLIMITED_ZOOM_MIN = -6;
 const UNLIMITED_ZOOM_MAX = 20;
 
-// 最多显示轨迹点数量：默认 1200 ≈ 当前时刻前后各 10 分钟（按每秒 1 个数据点估算）。
+// 最多显示轨迹点数量：默认 600 ≈ 当前时刻前后各 5 分钟（按每秒 1 个数据点估算）。
 // 勾选后仅绘制以当前时刻为中心、总数不超过该值的轨迹点，路线随播放动态伸缩
-const DEFAULT_MAX_POINTS = 1200;
+const DEFAULT_MAX_POINTS = 600;
 const MIN_MAX_POINTS = 10;
 
 const replayPage = {
@@ -82,11 +84,12 @@ const replayPage = {
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
 
-  dashJump: true,           // 超 1000 格跳跃段是否用虚线连接（localStorage 持久化）
+  dashJump: true,           // 超过设定距离的跳跃段是否用虚线连接（localStorage 持久化）
+  dashJumpBlocks: DEFAULT_DASH_JUMP_BLOCKS, // 跳跃段距离阈值（格，可调，默认 1000）
   arrowMode: 'all',         // 方向箭头显示模式：all=一直显示（默认）| notPassed=仅未走过 | none=一直隐藏
   unlimitedZoom: false,     // 是否取消地图最小/最大缩放等级限制（localStorage 持久化，默认关）
   maxPointsEnabled: false,  // 是否限制最多显示轨迹点数量（localStorage 持久化，默认关）
-  maxPoints: DEFAULT_MAX_POINTS, // 最多显示的轨迹点数量（默认 1200 ≈ 前后各 10 分钟）
+  maxPoints: DEFAULT_MAX_POINTS, // 最多显示的轨迹点数量（默认 600 ≈ 前后各 5 分钟）
   playerColors: {},         // uuid -> '#rrggbb' 用户指定的轨迹颜色（localStorage 持久化）
   rebuilding: false,        // 正在本地重建轨迹（抑制 fitBounds 等副作用）
 
@@ -113,6 +116,8 @@ const replayPage = {
       this.speedMode = localStorage.getItem('mc-replay.speedMode') || '2';
       this.tileProxy = localStorage.getItem('mc-replay.tileProxy') === '1';
       this.dashJump = localStorage.getItem('mc-replay.dashJump') !== '0';
+      const savedDashBlocks = parseInt(localStorage.getItem('mc-replay.dashJumpBlocks') || '', 10);
+      this.dashJumpBlocks = (savedDashBlocks >= MIN_DASH_JUMP_BLOCKS) ? savedDashBlocks : DEFAULT_DASH_JUMP_BLOCKS;
       const savedArrowMode = localStorage.getItem('mc-replay.arrowMode');
       this.arrowMode = ARROW_MODES.includes(savedArrowMode) ? savedArrowMode : 'all';
       this.unlimitedZoom = localStorage.getItem('mc-replay.unlimitedZoom') === '1';
@@ -331,11 +336,17 @@ const replayPage = {
       zoomCb.addEventListener('change', () => this.setUnlimitedZoom(zoomCb.checked));
     }
 
-    // 跳跃段虚线连接开关（偏好持久化到 localStorage，切换后重建全部已加载轨迹）
+    // 跳跃段虚线连接开关与距离阈值（偏好持久化到 localStorage；
+    // 开关只切换 dash 样式不重建轨迹，阈值变化才重建全部已加载轨迹）
     const dashCb = document.getElementById('check-dash-jump');
     if (dashCb) {
       dashCb.checked = this.dashJump;
       dashCb.addEventListener('change', () => this.setDashJump(dashCb.checked));
+    }
+    const dashInput = document.getElementById('input-dash-blocks');
+    if (dashInput) {
+      dashInput.addEventListener('change', () => this.setDashJumpBlocks(dashInput.value));
+      this.syncDashBlocksInput();
     }
 
     // 方向箭头显示模式（偏好持久化到 localStorage，切换后重绘即时生效）
@@ -788,13 +799,14 @@ const replayPage = {
     }
     const total = cum[n - 1];
 
-    // 段属性：相邻两点方块距离超过阈值判定为跳跃段（传送/重连），
-    // 用户开启虚线选项时用虚线绘制，否则与普通段一致
+    // 段属性：相邻两点方块距离超过阈值判定为跳跃段（传送/重连）。
+    // runs 始终按该属性分组（与虚线开关无关），开关只决定是否给跳跃 run
+    // 加 dashArray 样式——这样切换开关无需重建轨迹图层，避免多轨迹时卡顿
     const dashed = new Array(n > 1 ? n - 1 : 0);
     for (let i = 0; i < n - 1; i++) {
       const dx = xs[i + 1] - xs[i];
       const dz = zs[i + 1] - zs[i];
-      dashed[i] = this.dashJump && Math.sqrt(dx * dx + dz * dz) > DASH_JUMP_BLOCKS;
+      dashed[i] = Math.sqrt(dx * dx + dz * dz) > this.dashJumpBlocks;
     }
     // 连续同属性段合并为 run（减少 polyline 数量与每帧更新开销）；
     // run 覆盖点索引 [startIdx, endIdx]（含两端）
@@ -863,12 +875,12 @@ const replayPage = {
       if (this.arrowMode === 'none') track.tp.polylineDecorator.setPaths([]);
 
       // 每个 run 两条 polyline：走过部分=玩家色，未走部分=半透明白；
-      // 跳跃段（dash=true）加 dashArray 虚线
+      // 跳跃段（dash=true）在开关开启时加 dashArray 虚线
       for (const run of runs) {
         run.latlngs = latlngs.slice(run.startIdx, run.endIdx + 1);
         run.cumStart = cum[run.startIdx];
         run.cumEnd = cum[run.endIdx];
-        const dashStyle = run.dash ? { dashArray: DASH_PATTERN } : {};
+        const dashStyle = (run.dash && this.dashJump) ? { dashArray: DASH_PATTERN } : {};
         run.passedLine = L.polyline([], Object.assign({
           color, weight: 4, opacity: 0.95, lineCap: 'butt',
         }, dashStyle)).addTo(this.map);
@@ -969,13 +981,49 @@ const replayPage = {
     });
   },
 
-  /** 切换「超 1000 格跳跃段用虚线连接」（localStorage 持久化，重建全部已加载轨迹） */
+  /**
+   * 切换「跳跃段用虚线连接」（localStorage 持久化）。
+   * runs 在 buildTrack 中始终按跳跃段分组，因此这里只切换 dash 样式、
+   * 不重建轨迹图层（多轨迹时避免 remove/build 造成的卡顿）；
+   * 阈值变化才需要重建（见 setDashJumpBlocks）。
+   */
   setDashJump(on) {
     this.dashJump = !!on;
     try {
       localStorage.setItem('mc-replay.dashJump', this.dashJump ? '1' : '0');
     } catch (e) { /* 隐私模式等场景忽略 */ }
+    const dash = this.dashJump ? DASH_PATTERN : null;
+    for (const track of this.tracks.values()) {
+      for (const run of track.runs) {
+        if (!run.dash) continue;
+        run.passedLine.setStyle({ dashArray: dash });
+        run.notPassedLine.setStyle({ dashArray: dash });
+      }
+    }
+    this.syncDashBlocksInput();
+  },
+
+  /**
+   * 设置跳跃段距离阈值（格，localStorage 持久化，下限 MIN_DASH_JUMP_BLOCKS）。
+   * runs 按阈值分组，变化后重建全部已加载轨迹。
+   */
+  setDashJumpBlocks(v) {
+    let n = Math.floor(Number(v));
+    if (!Number.isFinite(n) || n < MIN_DASH_JUMP_BLOCKS) n = MIN_DASH_JUMP_BLOCKS;
+    this.dashJumpBlocks = n;
+    try {
+      localStorage.setItem('mc-replay.dashJumpBlocks', String(n));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
     for (const uuid of [...this.tracks.keys()]) this.rebuildTrack(uuid);
+    this.syncDashBlocksInput();
+  },
+
+  /** 同步虚线阈值输入框：开关关闭时禁用；非聚焦时同步当前值 */
+  syncDashBlocksInput() {
+    const input = document.getElementById('input-dash-blocks');
+    if (!input) return;
+    input.disabled = !this.dashJump;
+    if (document.activeElement !== input) input.value = this.dashJumpBlocks;
   },
 
   /**
@@ -1257,12 +1305,16 @@ const replayPage = {
               run.passedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, ve - run.startIdx + 1));
               run.notPassedLine.setLatLngs([]);
             } else {
-              // 部分走过：在拆分段内线性插值出当前位置点，前后两半分别着色
+              // 部分走过：在拆分段内线性插值出当前位置点，前后两半分别着色。
+              // 注意必须用 run.latlngs（run 局部数组，其 [0] 对应全局 startIdx）：
+              // 误用 track.latlngs（全局数组）配局部偏移会从轨迹第一个点开始切片，
+              // 拼上当前位置后形成「从首记录点到当前位置」的长直线（仅 startIdx>0
+              // 的 run 出现，即开启虚线分组后才暴露）
               const a = track.latlngs[segIdx];
               const b = track.latlngs[segIdx + 1];
               const mid = L.latLng(a.lat + (b.lat - a.lat) * alpha, a.lng + (b.lng - a.lng) * alpha);
-              run.passedLine.setLatLngs(track.latlngs.slice(vs - run.startIdx, segIdx + 1 - run.startIdx).concat([mid]));
-              run.notPassedLine.setLatLngs([mid].concat(track.latlngs.slice(segIdx + 1 - run.startIdx, ve - run.startIdx + 1)));
+              run.passedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, segIdx + 1 - run.startIdx).concat([mid]));
+              run.notPassedLine.setLatLngs([mid].concat(run.latlngs.slice(segIdx + 1 - run.startIdx, ve - run.startIdx + 1)));
             }
           }
         }
