@@ -447,6 +447,17 @@ table.data tr.clickable { cursor: pointer; }
   pointer-events: none;
 }
 
+/* 录制保活元素：1×1 不可见，录制期间由 JS 切换 opacity 触发重绘（见 replay.js） */
+#record-keepalive {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 1;
+  pointer-events: none;
+}
+
 .back-btn { margin-bottom: 4px; }
 
 /* ---------- 录制模式：保留侧边栏，隐藏 Leaflet 控件，地图按比例居中 ---------- */

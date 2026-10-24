@@ -262,10 +262,11 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 - **比例切换**（仅非录制状态可用）：只改 `#map-container` 尺寸，**不调 `fitBounds`**，地图中心点与缩放级别不变，切换后 `map.invalidateSize()` 重算。
 - **获取录制区域**（`acquireRegion()`）：`getDisplayMedia({ video: { frameRate: 30 }, selfBrowserSurface: 'include', preferCurrentTab: true, audio: false })`。若浏览器支持 `RestrictionTarget`（Edge/Chrome 132+）则 `RestrictionTarget.fromElement(mapContainer)` + `track.restrictTo()` 把采集**裁剪到地图区域**；不支持或裁剪失败（含用户选错源）则**降级保留未裁剪的原始 stream**，提示「将录制整个标签页，请后期手动裁剪」，仍进入 REGION_READY。用户取消（`NotAllowedError`）则停留 RECORDING_MODE 可重试。
 - **区域有效期**：获取区域后无时间限制，可随时开始/再次录制；仅当用户在浏览器原生 UI 主动停止共享（track `ended` 事件）时才回收区域，提示重新获取。
-- **录制**：「开始录制」创建 `MediaRecorder(stream)` 并 `start(1000)`，**不自动播放回放**；编码仅 MP4/H.264，按 `video/mp4;codecs=avc1.42E01E`（H.264 Baseline）→ `video/mp4;codecs=avc1` → `video/mp4` 优先级探测（Chrome/Edge 107+ 支持），均不支持时拒绝启动并提示（不回退 WebM/VP9），码率 8Mbps，文件名固定 `replay-{sessionId}-{yyyyMMdd-HHmmss}.mp4`，Blob 容器固定 `video/mp4`。「停止录制」合成 Blob 自动下载，回放继续播放不暂停，stream 保留，可再次录制无需重新获取。REGION_READY 下重取区域会先释放旧 stream 再完整重走流程；RECORDING 下「获取录制区域」与比例切换均禁用。
+- **录制**：「开始录制」创建 `MediaRecorder(stream)` 并 `start(1000)`，**不自动播放回放**；编码仅 MP4/H.264，按 `video/mp4;codecs=avc1.42E01E`（H.264 Baseline）→ `video/mp4;codecs=avc1` → `video/mp4` 优先级探测（Chrome/Edge 107+ 支持），均不支持时拒绝启动并提示（不回退 WebM/VP9），码率 8Mbps，文件名固定 `replay-{sessionId}-{yyyyMMdd-HHmmss}.mp4`，Blob 容器固定 `video/mp4`。开录前会校验 stream 的 video track 仍为 `live`（已被浏览器原生停止共享的流直接录会得到 0KB 文件，此时提示重新获取）。「停止录制」合成 Blob 自动下载，回放继续播放不暂停，stream 保留，可再次录制无需重新获取。REGION_READY 下重取区域会先释放旧 stream 再完整重走流程；RECORDING 下「获取录制区域」与比例切换均禁用。
+- **画面保活与 0KB 防护**：捕获源为「当前标签页」时，页面完全静止（回放暂停且无交互）或切到后台都会**停止产出视频帧**，导致 MediaRecorder 收不到数据、合成出 0KB 文件。对此有三层机制：① **保活**——录制期间用 `#map-container` 内 1×1 不可见元素（`#record-keepalive`，`pointer-events:none`）每 200ms 切换 opacity 触发页面重绘，使画面静止时也持续产帧；② **后台警告**——录制中页面切到后台（`visibilitychange`）时状态行警告「当前标签页录制将无画面」；③ **空数据防护**——`onstop` 时若整个录制期未收到任何数据，**不下载 0KB 文件**，改为提示「未捕获到视频数据。请保持本标签页在前台且画面有变化，或重新获取区域时选择『整个屏幕』作为录制源」，区域保留可重试；诊断信息（UA、编码支持情况、分片数字节数）记录在 `Recorder.diag` 并输出 `console.error` 便于排查。
 - **退出**：退出录制模式时若正在录制先停止并下载（`Recorder.stop()` 返回 Promise，await 到下载完成），然后释放 stream、恢复默认视图（Leaflet 控件重现、比例回 16:9、面板隐藏）。Esc 同样可退出。
 
-实现：`frontend/public/js/recorder.js`（MediaRecorder 编码与下载，stream 由外部注入）+ `frontend/public/js/replay.js` 录制段落（状态机与 UI）。
+实现：`frontend/public/js/recorder.js`（MediaRecorder 编码与下载，stream 由外部注入）+ `frontend/public/js/replay.js` 录制段落（状态机与 UI）。nginx 对 `.html` 入口不缓存、`.js/.css` 设 5 分钟 `must-revalidate`，保证前端更新后用户即时生效（避免旧 JS 缓存）。
 
 ## 数据库导入导出
 

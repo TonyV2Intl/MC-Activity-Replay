@@ -315,6 +315,13 @@ const replayPage = {
       else if (e.code === 'Escape' && this.recordingMode) { this.exitRecordingMode(); }
     });
 
+    // 录制中页面切到后台：「当前标签页」捕获源将停止产帧（录出空视频），警告用户
+    document.addEventListener('visibilitychange', () => {
+      if (this.recordState === 'RECORDING' && document.hidden) {
+        this.setRecordStatus('警告：页面已切到后台，「当前标签页」录制将无画面，请立即切回本标签页');
+      }
+    });
+
     // 常显玩家名字开关（偏好持久化到 localStorage）
     const tipCb = document.getElementById('check-tooltip-permanent');
     if (tipCb) {
@@ -395,19 +402,24 @@ const replayPage = {
     });
 
     // 录制状态变化（开始/停止录制）→ 刷新面板
-    Recorder.onStateChange = (recording) => {
+    Recorder.onStateChange = (recording, err) => {
+      this.stopRecordKeepAlive();
       if (recording) {
         this.recordState = 'RECORDING';
       } else if (this.recordState === 'RECORDING') {
-        // 录制结束并已下载：stream 仍有效 → 回到 REGION_READY 可再次录制；
+        // 录制结束：stream 仍有效 → 回到 REGION_READY 可再次录制；
         // stream 已被浏览器原生停止共享 → 回到 RECORDING_MODE 需重新获取
-        if (this.recordStream && this.recordStream.getVideoTracks().some(t => t.readyState === 'live')) {
+        const streamLive = this.recordStream &&
+          this.recordStream.getVideoTracks().some(t => t.readyState === 'live');
+        if (streamLive) {
           this.recordState = 'REGION_READY';
-          this.setRecordStatus('已下载；可再次录制，无需重新获取');
+          this.setRecordStatus(err
+            ? err + '（区域仍有效，排除上述原因后可再次录制）'
+            : '已下载；可再次录制，无需重新获取');
         } else {
           this.recordState = 'RECORDING_MODE';
           this.recordStream = null;
-          this.setRecordStatus('录制源已结束，请重新获取区域');
+          this.setRecordStatus(err || '录制源已结束，请重新获取区域');
         }
       }
       this.updateRecordPanel();
@@ -1437,6 +1449,7 @@ const replayPage = {
       this.setRecordStatus('正在停止并下载…');
       await Recorder.stop();
     }
+    this.stopRecordKeepAlive();
     // 释放 stream
     this.releaseRecordStream();
     this.recordState = 'off';
@@ -1522,19 +1535,29 @@ const replayPage = {
   },
 
   /** 开始录制：MediaRecorder(stream) + start，不自动播放回放。
-   *  编码仅 MP4/H.264；浏览器不支持时 Recorder.start 返回 false，停留在 REGION_READY */
+   *  编码仅 MP4/H.264；浏览器不支持或流已失效时停留在当前状态并提示 */
   startRecording() {
     if (this.recordState !== 'REGION_READY' || !this.recordStream) return;
+    // 流已被浏览器原生停止共享（ended）时不能直接开录（会得到 0KB 文件）
+    const vt = this.recordStream.getVideoTracks()[0];
+    if (!vt || vt.readyState !== 'live') {
+      this.recordStream = null;
+      this.recordState = 'RECORDING_MODE';
+      this.updateRecordPanel();
+      this.setRecordStatus('录制源已失效，请重新获取区域');
+      return;
+    }
     const d = new Date();
     const p = n => String(n).padStart(2, '0');
     const ts = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' +
       p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
     const ok = Recorder.start(this.recordStream, 'replay-' + this.session.id + '-' + ts);
     if (!ok) {
-      this.setRecordStatus('当前浏览器不支持 MP4/H.264 录制，无法开始录制（请使用 Chrome/Edge 107+ 或新版 Firefox/Safari）');
+      this.setRecordStatus('启动录制失败：浏览器不支持 MP4/H.264 录制（请使用 Chrome/Edge 107+ 或新版 Firefox/Safari）');
       return;
     }
     this.recordState = 'RECORDING';
+    this.startRecordKeepAlive();
     this.updateRecordPanel();
     this.setRecordStatus('录制中…（回放继续播放，可随时拖动/缩放地图）');
   },
@@ -1542,7 +1565,34 @@ const replayPage = {
   /** 停止录制：onstop 合成 Blob 自动下载，随后回到 REGION_READY 可再次录制 */
   stopRecording() {
     if (this.recordState !== 'RECORDING') return;
+    this.stopRecordKeepAlive();
     Recorder.stop(); // onstop → 下载 → onStateChange(false) 复位状态
+  },
+
+  /**
+   * 录制保活：tab capture 捕获「当前标签页」时，页面完全静止（回放暂停、无交互）
+   * 会停止产出视频帧，导致 MediaRecorder 收不到数据、下载 0KB 文件。
+   * 录制期间用 1×1 不可见元素周期性切换 opacity 触发页面重绘，保持帧产出。
+   * 元素在 #map-container 内（pointer-events:none、完全透明），不影响画面内容。
+   */
+  startRecordKeepAlive() {
+    if (this._keepAliveTimer) return;
+    const el = document.getElementById('record-keepalive');
+    if (!el) return;
+    let on = false;
+    this._keepAliveTimer = setInterval(() => {
+      on = !on;
+      el.style.opacity = on ? '0.99' : '1';
+    }, 200);
+  },
+
+  stopRecordKeepAlive() {
+    if (this._keepAliveTimer) {
+      clearInterval(this._keepAliveTimer);
+      this._keepAliveTimer = null;
+    }
+    const el = document.getElementById('record-keepalive');
+    if (el) el.style.opacity = '1';
   },
 
   /** stream 被浏览器原生停止共享时回收 */
