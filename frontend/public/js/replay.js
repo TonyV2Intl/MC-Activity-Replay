@@ -40,8 +40,8 @@ const DASH_PATTERN = '12 9'; // 虚线段样式（屏幕像素单位，不随缩
 // 方向箭头显示模式（localStorage 持久化，键：mc-replay.arrowMode）
 const ARROW_MODES = ['all', 'notPassed', 'none']; // all=一直显示（默认）| notPassed=仅未走过的路径 | none=一直隐藏
 
-// tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields）
-const DEFAULT_TIP_FIELDS = { name: true, coords: true, point: true, speed: true, health: true, armor: true, station: true, route: true };
+// tooltip 栏目默认显示开关（localStorage 持久化，键：mc-replay.tipFields；血量/护甲默认不勾选）
+const DEFAULT_TIP_FIELDS = { name: true, coords: true, point: true, speed: true, health: false, armor: false, station: true, route: true };
 
 // 取消地图缩放等级限制时的缩放范围（Leaflet 支持负缩放；超出瓦片原生等级的部分为放大显示）
 const UNLIMITED_ZOOM_MIN = -6;

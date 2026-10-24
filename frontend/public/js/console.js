@@ -15,8 +15,8 @@ const consolePage = {
   speedMode: '2',
   speedHistory: new Map(), // uuid -> [{x, z, t}]（t 取后端 polledAt，最多保留 3 个）
 
-  // 实时监控卡片栏目显示开关（localStorage 持久化；名字/头像始终显示）
-  liveFields: { coords: true, speed: true, health: true, armor: true, station: true, route: true },
+  // 实时监控卡片栏目显示开关（localStorage 持久化；名字/头像始终显示；血量/护甲默认不勾选）
+  liveFields: { coords: true, speed: true, health: false, armor: false, station: true, route: true },
 
   init() {
     this.refreshStatus();
