@@ -50,6 +50,10 @@
           <label><input type="radio" name="arrow-mode" value="notPassed"> 仅未走过显示</label>
           <label><input type="radio" name="arrow-mode" value="none"> 一直隐藏</label>
         </div>
+        <div class="check-group" title="勾选后不再绘制当前位置之后的轨迹（未走过的部分），只保留已走过的路线，播放时路线只增长不回看（偏好记忆在浏览器本地）">
+          <label><input type="checkbox" id="check-hide-not-passed"> <span>隐藏未走过的路线</span></label>
+          <span class="hint">开启后仅显示当前位置之前的轨迹（走过的部分），与「最多显示轨迹点数量」叠加时仅影响窗口内未走过的部分</span>
+        </div>
         <div class="check-group" title="勾选后仅绘制当前时刻前后指定数量的轨迹点（默认 600 ≈ 前后各 5 分钟），路线随播放动态伸缩，避免长轨迹混乱；不勾选则显示完整轨迹">
           <label><input type="checkbox" id="check-max-points"> <span>最多显示轨迹点数量</span></label>
           <input type="number" id="input-max-points" min="10" step="100" value="600">

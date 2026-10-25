@@ -87,6 +87,7 @@ const replayPage = {
   dashJump: true,           // 超过设定距离的跳跃段是否用虚线连接（localStorage 持久化）
   dashJumpBlocks: DEFAULT_DASH_JUMP_BLOCKS, // 跳跃段距离阈值（格，可调，默认 1000）
   arrowMode: 'all',         // 方向箭头显示模式：all=一直显示（默认）| notPassed=仅未走过 | none=一直隐藏
+  hideNotPassed: false,     // 隐藏未走过的路线（localStorage 持久化，默认关）
   unlimitedZoom: false,     // 是否取消地图最小/最大缩放等级限制（localStorage 持久化，默认关）
   maxPointsEnabled: false,  // 是否限制最多显示轨迹点数量（localStorage 持久化，默认关）
   maxPoints: DEFAULT_MAX_POINTS, // 最多显示的轨迹点数量（默认 600 ≈ 前后各 5 分钟）
@@ -118,6 +119,7 @@ const replayPage = {
       this.dashJump = localStorage.getItem('mc-replay.dashJump') !== '0';
       const savedDashBlocks = parseInt(localStorage.getItem('mc-replay.dashJumpBlocks') || '', 10);
       this.dashJumpBlocks = (savedDashBlocks >= MIN_DASH_JUMP_BLOCKS) ? savedDashBlocks : DEFAULT_DASH_JUMP_BLOCKS;
+      this.hideNotPassed = localStorage.getItem('mc-replay.hideNotPassed') === '1';
       const savedArrowMode = localStorage.getItem('mc-replay.arrowMode');
       this.arrowMode = ARROW_MODES.includes(savedArrowMode) ? savedArrowMode : 'all';
       this.unlimitedZoom = localStorage.getItem('mc-replay.unlimitedZoom') === '1';
@@ -364,6 +366,13 @@ const replayPage = {
         if (r.checked) this.setArrowMode(r.value);
       });
     });
+
+    // 隐藏未走过的路线（偏好持久化到 localStorage，切换后重绘即时生效）
+    const hideNpCb = document.getElementById('check-hide-not-passed');
+    if (hideNpCb) {
+      hideNpCb.checked = this.hideNotPassed;
+      hideNpCb.addEventListener('change', () => this.setHideNotPassed(hideNpCb.checked));
+    }
 
     // 最多显示轨迹点数量（偏好持久化到 localStorage；切换/改值即时生效，无需重建轨迹）
     const maxCb = document.getElementById('check-max-points');
@@ -896,7 +905,8 @@ const replayPage = {
         run.passedLine = L.polyline([], Object.assign({
           color, weight: 4, opacity: 0.95, lineCap: 'butt',
         }, dashStyle)).addTo(this.map);
-        run.notPassedLine = L.polyline(run.latlngs, Object.assign({
+        // 隐藏未走过的路线：加载瞬间未走部分即为空（render() 每帧按状态重设）
+        run.notPassedLine = L.polyline(this.hideNotPassed ? [] : run.latlngs, Object.assign({
           color: 'rgba(255,255,255,0.3)', weight: 4, opacity: 1, lineCap: 'butt',
         }, dashStyle)).addTo(this.map);
         run.state = 0;      // 0=未开始 1=部分走过 2=已走过 3=窗口外隐藏
@@ -1050,6 +1060,23 @@ const replayPage = {
     try {
       localStorage.setItem('mc-replay.arrowMode', this.arrowMode);
     } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.render();
+  },
+
+  /**
+   * 切换「隐藏未走过的路线」（localStorage 持久化）：
+   * 开启后不再绘制当前位置之后的轨迹（未走过部分），只保留已走过的路线。
+   * 该开关不影响 run 的状态/拆分位置判定，变化检测会漏掉重绘，
+   * 因此切换时把所有 run.state 置为脏值（-1）强制下一帧重写折线。
+   */
+  setHideNotPassed(on) {
+    this.hideNotPassed = !!on;
+    try {
+      localStorage.setItem('mc-replay.hideNotPassed', this.hideNotPassed ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) {
+      for (const run of track.runs) run.state = -1;
+    }
     this.render();
   },
 
@@ -1312,7 +1339,9 @@ const replayPage = {
               run.notPassedLine.setLatLngs([]);
             } else if (st === 0) {
               run.passedLine.setLatLngs([]);
-              run.notPassedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, ve - run.startIdx + 1));
+              // 隐藏未走过的路线：整个 run 未开始 → 整体不画
+              run.notPassedLine.setLatLngs(this.hideNotPassed ? [] :
+                run.latlngs.slice(vs - run.startIdx, ve - run.startIdx + 1));
             } else if (st === 2) {
               run.passedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, ve - run.startIdx + 1));
               run.notPassedLine.setLatLngs([]);
@@ -1326,7 +1355,9 @@ const replayPage = {
               const b = track.latlngs[segIdx + 1];
               const mid = L.latLng(a.lat + (b.lat - a.lat) * alpha, a.lng + (b.lng - a.lng) * alpha);
               run.passedLine.setLatLngs(run.latlngs.slice(vs - run.startIdx, segIdx + 1 - run.startIdx).concat([mid]));
-              run.notPassedLine.setLatLngs([mid].concat(run.latlngs.slice(segIdx + 1 - run.startIdx, ve - run.startIdx + 1)));
+              // 隐藏未走过的路线：当前位置之后不画，只保留走过的部分
+              run.notPassedLine.setLatLngs(this.hideNotPassed ? [] :
+                [mid].concat(run.latlngs.slice(segIdx + 1 - run.startIdx, ve - run.startIdx + 1)));
             }
           }
         }
