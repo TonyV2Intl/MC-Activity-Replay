@@ -323,10 +323,12 @@ const replayPage = {
       else if (e.code === 'Escape' && this.recordingMode) { this.exitRecordingMode(); }
     });
 
-    // 录制中页面切到后台：「当前标签页」捕获源将停止产帧（录出空视频），警告用户
+    // 录制中页面切到后台：「当前标签页」捕获源将停止产帧（录出空视频），警告用户；
+    // 同时把可见性变化同步给 Recorder，累计后台时长用于失败原因诊断
     document.addEventListener('visibilitychange', () => {
+      Recorder.noteVisibility(document.hidden);
       if (this.recordState === 'RECORDING' && document.hidden) {
-        this.setRecordStatus('警告：页面已切到后台，「当前标签页」录制将无画面，请立即切回本标签页');
+        this.setRecordStatus('警告：页面已切到后台，「当前标签页」录制不会产生画面，请立即切回本标签页');
       }
     });
 
@@ -428,6 +430,7 @@ const replayPage = {
     // 录制状态变化（开始/停止录制）→ 刷新面板
     Recorder.onStateChange = (recording, err) => {
       this.stopRecordKeepAlive();
+      this.stopRecordWatchdog();
       if (recording) {
         this.recordState = 'RECORDING';
       } else if (this.recordState === 'RECORDING') {
@@ -1500,6 +1503,7 @@ const replayPage = {
       await Recorder.stop();
     }
     this.stopRecordKeepAlive();
+    this.stopRecordWatchdog();
     // 释放 stream
     this.releaseRecordStream();
     this.recordState = 'off';
@@ -1682,6 +1686,7 @@ const replayPage = {
     }
     this.recordState = 'RECORDING';
     this.startRecordKeepAlive();
+    this.startRecordWatchdog();
     this.updateRecordPanel();
     this.setRecordStatus('录制中…（回放继续播放，可随时拖动/缩放地图）');
   },
@@ -1690,14 +1695,17 @@ const replayPage = {
   stopRecording() {
     if (this.recordState !== 'RECORDING') return;
     this.stopRecordKeepAlive();
+    this.stopRecordWatchdog();
     Recorder.stop(); // onstop → 下载 → onStateChange(false) 复位状态
   },
 
   /**
    * 录制保活：tab capture 捕获「当前标签页」时，页面完全静止（回放暂停、无交互）
    * 会停止产出视频帧，导致 MediaRecorder 收不到数据、下载 0KB 文件。
-   * 录制期间用 1×1 不可见元素周期性切换 opacity 触发页面重绘，保持帧产出。
-   * 元素在 #map-container 内（pointer-events:none、完全透明），不影响画面内容。
+   * 录制期间用 1×1 元素周期性切换 opacity 触发页面重绘，保持帧产出。
+   * 元素必须是「看得见的变化」才会产帧：CSS 里给了实际背景色（rgba(0,0,0,0.02)）
+   * 并用 z-index 盖住 Leaflet 瓦片图层（否则被遮挡/全透明时切 opacity 零像素差、
+   * 不触发重绘）；opacity 在 0 与 1 之间切换，保证合成像素差 ≥ 1/255。
    */
   startRecordKeepAlive() {
     if (this._keepAliveTimer) return;
@@ -1706,7 +1714,7 @@ const replayPage = {
     let on = false;
     this._keepAliveTimer = setInterval(() => {
       on = !on;
-      el.style.opacity = on ? '0.99' : '1';
+      el.style.opacity = on ? '0' : '1';
     }, 200);
   },
 
@@ -1717,6 +1725,46 @@ const replayPage = {
     }
     const el = document.getElementById('record-keepalive');
     if (el) el.style.opacity = '1';
+  },
+
+  /**
+   * 录制看护（watchdog）：保活只覆盖「前台+静止」场景；若录制数秒后仍未收到
+   * 任何视频帧（Recorder 帧观测，与编码分片机制无关），说明是切后台/被遮挡、
+   * 或捕获了其他静止源——立即在状态行警告，让用户录制中就能发现并处理，
+   * 而不是停止后才发现 0KB。帧观测不可用（老浏览器）时自动禁用。
+   */
+  startRecordWatchdog() {
+    this.stopRecordWatchdog();
+    this._recordStartAt = performance.now();
+    this._noFrameWarned = false;
+    this._recordWatchdog = setInterval(() => {
+      if (this.recordState !== 'RECORDING') return;
+      if (!Recorder.frameMonitorActive) return; // 无帧观测能力：不猜
+      const elapsed = (performance.now() - this._recordStartAt) / 1000;
+      if (Recorder.frameCount > 0) {
+        if (this._noFrameWarned) {
+          // 帧已恢复：撤下警告，回到正常状态
+          this._noFrameWarned = false;
+          this.setRecordStatus('录制中…（回放继续播放，可随时拖动/缩放地图）');
+        }
+        return;
+      }
+      if (elapsed < 3) return;
+      this._noFrameWarned = true;
+      this.setRecordStatus(document.hidden
+        ? '警告：页面已切到后台，「当前标签页」录制不会产生画面，请立即切回本标签页'
+        : '警告：已录制 ' + Math.floor(elapsed) + ' 秒但未捕获到任何画面。请确认获取区域时选择的是' +
+          '「当前标签页」源，并保持画面变化（播放回放或拖动地图）；若无效，请重新获取区域并选择' +
+          '「整个屏幕」作为录制源');
+    }, 1000);
+  },
+
+  stopRecordWatchdog() {
+    if (this._recordWatchdog) {
+      clearInterval(this._recordWatchdog);
+      this._recordWatchdog = null;
+    }
+    this._noFrameWarned = false;
   },
 
   /** stream 被浏览器原生停止共享时回收 */

@@ -132,8 +132,9 @@
         <div id="map"></div>
         <!-- 时间戳：#map-container 后代元素，绝对定位右上角，包含进录制范围 -->
         <div class="replay-timestamp" id="timestamp">---------- --:--:--</div>
-        <!-- 录制保活：录制期间由 JS 周期性切换 opacity 触发页面重绘，
-             使「当前标签页」捕获源在画面静止时仍持续产出视频帧（1×1 不可见） -->
+        <!-- 录制保活：录制期间由 JS 周期性切换 opacity（0↔1）触发页面重绘，
+             使「当前标签页」捕获源在画面静止时仍持续产出视频帧。
+             必须有背景色且 z-index 盖住瓦片图层，否则像素零变化不产帧（见 style.css） -->
         <div id="record-keepalive" aria-hidden="true"></div>
       </div>
     </div>

@@ -447,13 +447,18 @@ table.data tr.clickable { cursor: pointer; }
   pointer-events: none;
 }
 
-/* 录制保活元素：1×1 不可见，录制期间由 JS 切换 opacity 触发重绘（见 replay.js） */
+/* 录制保活元素：1×1 近不可见，录制期间由 JS 切换 opacity 触发重绘（见 replay.js）。
+   两个要点缺一不可：① 必须有实际背景色——全透明元素切 opacity 不产生任何像素差，
+   合成器无帧可产；② z-index 必须盖住 Leaflet 瓦片图层（≤1000）——被遮挡时
+   像素变化不可见，同样不产帧。opacity 在 0↔1 间切换，像素差 ≥ 1/255。 */
 #record-keepalive {
   position: absolute;
   left: 0;
   top: 0;
   width: 1px;
   height: 1px;
+  background: rgba(0, 0, 0, 0.02);
+  z-index: 2147483647;
   opacity: 1;
   pointer-events: none;
 }
