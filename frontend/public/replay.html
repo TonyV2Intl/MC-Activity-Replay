@@ -109,6 +109,11 @@
             <label><input type="radio" name="record-ratio" value="16:9" checked> 16:9</label>
             <label><input type="radio" name="record-ratio" value="4:3"> 4:3</label>
           </div>
+          <div class="check-group" title="指定地图区域高度（像素），宽度按当前画面比例自动计算；留空为自适应（横向顶满、上下留空），录制中不可调整">
+            <span>地图区域高度：</span>
+            <input type="number" id="input-record-height" min="200" step="10" placeholder="自适应">
+            <span class="hint" id="record-size-hint">当前画面尺寸：自适应（16:9，横向顶满）</span>
+          </div>
           <div class="row" style="margin-top: 8px;">
             <button id="btn-get-region" onclick="replayPage.acquireRegion()">获取录制区域</button>
           </div>

@@ -52,6 +52,9 @@ const UNLIMITED_ZOOM_MAX = 20;
 const DEFAULT_MAX_POINTS = 600;
 const MIN_MAX_POINTS = 10;
 
+// 录制模式地图区域高度（px）：0=自适应（横向顶满）；宽度 = 高度 × 画面比例
+const MIN_RECORD_HEIGHT = 200;
+
 const replayPage = {
   /* ---------- 状态 ---------- */
   sessionId: null,
@@ -76,6 +79,7 @@ const replayPage = {
   recordState: 'off',       // 录制状态机：off | RECORDING_MODE | REGION_READY | RECORDING
   recordStream: null,       // getDisplayMedia 获取的屏幕流（REGION_READY/RECORDING 期间保留，停止录制不释放）
   recordRatio: '16:9',      // 录制画面比例：16:9 | 4:3
+  recordHeight: 0,          // 录制地图区域高度（px，0=自适应；宽度=高度×比例，localStorage 持久化）
 
   pointTimes: [],           // 所有已加载轨迹点的去重时间戳（步进用）
 
@@ -120,6 +124,8 @@ const replayPage = {
       const savedDashBlocks = parseInt(localStorage.getItem('mc-replay.dashJumpBlocks') || '', 10);
       this.dashJumpBlocks = (savedDashBlocks >= MIN_DASH_JUMP_BLOCKS) ? savedDashBlocks : DEFAULT_DASH_JUMP_BLOCKS;
       this.hideNotPassed = localStorage.getItem('mc-replay.hideNotPassed') === '1';
+      const savedRecordHeight = parseInt(localStorage.getItem('mc-replay.recordHeight') || '', 10);
+      this.recordHeight = (savedRecordHeight >= MIN_RECORD_HEIGHT) ? savedRecordHeight : 0;
       const savedArrowMode = localStorage.getItem('mc-replay.arrowMode');
       this.arrowMode = ARROW_MODES.includes(savedArrowMode) ? savedArrowMode : 'all';
       this.unlimitedZoom = localStorage.getItem('mc-replay.unlimitedZoom') === '1';
@@ -409,6 +415,15 @@ const replayPage = {
         if (r.checked) this.setRecordRatio(r.value);
       });
     });
+
+    // 录制模式：地图区域高度（留空=自适应，宽度按比例计算；持久化到 localStorage）
+    const recordHeightInput = document.getElementById('input-record-height');
+    if (recordHeightInput) {
+      recordHeightInput.addEventListener('change', () => this.setRecordHeight(recordHeightInput.value));
+      // 失焦时按生效值回显（聚焦期间不写值，避免打断输入；如输入 50 会被提升为 200）
+      recordHeightInput.addEventListener('blur', () => this.syncRecordHeightInput());
+      this.syncRecordHeightInput();
+    }
 
     // 录制状态变化（开始/停止录制）→ 刷新面板
     Recorder.onStateChange = (recording, err) => {
@@ -1470,8 +1485,12 @@ const replayPage = {
     this.setRecordRatio('16:9'); // 比例复位（同时应用容器尺寸）
     this.setRecordStatus('点击「获取录制区域」选择录制源');
     this.updateRecordPanel();
-    // 布局变化后让 Leaflet 按新容器尺寸重算（保持中心点与缩放级别）
-    setTimeout(() => this.map && this.map.invalidateSize(), 60);
+    // 布局变化后让 Leaflet 按新容器尺寸重算（保持中心点与缩放级别），
+    // 并应用持久化的地图区域高度（若有）
+    setTimeout(() => {
+      if (this.map) this.map.invalidateSize();
+      this.applyRecordContainerSize();
+    }, 60);
   },
 
   async exitRecordingMode() {
@@ -1491,6 +1510,10 @@ const replayPage = {
     document.querySelectorAll('input[name="record-ratio"]').forEach(r => { r.checked = r.value === '16:9'; });
     document.getElementById('btn-record-mode').textContent = '进入录制模式';
     document.getElementById('record-panel').style.display = 'none';
+    // 清除显式尺寸（inline style），回归默认全屏布局
+    const container = document.getElementById('map-container');
+    if (container) { container.style.width = ''; container.style.height = ''; }
+    this.updateRecordSizeHint();
     this.setRecordStatus('点击「获取录制区域」选择录制源');
     setTimeout(() => this.map && this.map.invalidateSize(), 60);
   },
@@ -1506,6 +1529,76 @@ const replayPage = {
     document.body.classList.add(this.recordRatio === '4:3' ? 'recording-ratio-43' : 'recording-ratio-169');
     document.querySelectorAll('input[name="record-ratio"]').forEach(r => { r.checked = r.value === this.recordRatio; });
     setTimeout(() => this.map && this.map.invalidateSize(), 30);
+    // 已设定显式高度时，宽度按新比例重算
+    this.applyRecordContainerSize();
+  },
+
+  /**
+   * 设置录制地图区域高度（px；0/空 = 自适应）。宽度 = 高度 × 当前比例，
+   * 超出 #map-area 可用空间时同比缩小（保持比例）。localStorage 持久化。
+   */
+  setRecordHeight(v) {
+    const raw = String(v == null ? '' : v).trim();
+    let n = raw === '' ? 0 : Math.floor(Number(raw));
+    if (raw !== '' && (!Number.isFinite(n) || n < MIN_RECORD_HEIGHT)) n = MIN_RECORD_HEIGHT;
+    this.recordHeight = n;
+    try {
+      localStorage.setItem('mc-replay.recordHeight', String(n));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.syncRecordHeightInput();
+    this.applyRecordContainerSize();
+    if (this.recordState === 'REGION_READY') {
+      // 裁剪区域按获取时的容器尺寸固定，尺寸变更后需重新获取才生效
+      this.setRecordStatus('画面尺寸已调整；若已获取区域，请重新获取以使录制范围生效');
+    }
+  },
+
+  /** 同步高度输入框（非聚焦时写值，避免打断用户输入） */
+  syncRecordHeightInput() {
+    const input = document.getElementById('input-record-height');
+    if (!input) return;
+    if (document.activeElement !== input) input.value = this.recordHeight ? String(this.recordHeight) : '';
+  },
+
+  /**
+   * 应用地图区域尺寸：recordHeight>0 时按 高度×比例 设置容器显式宽高
+   * （inline style，覆盖 CSS 的 aspect-ratio 自适应规则），并受 #map-area
+   * 可用空间钳制；为 0 时清除 inline style 回归自适应。仅录制模式下生效。
+   */
+  applyRecordContainerSize() {
+    const container = document.getElementById('map-container');
+    const area = document.getElementById('map-area');
+    if (!container || !area) return;
+    if (!this.recordingMode || !this.recordHeight) {
+      container.style.width = '';
+      container.style.height = '';
+      this.updateRecordSizeHint();
+      return;
+    }
+    const ratio = this.recordRatio === '4:3' ? 4 / 3 : 16 / 9;
+    const availW = area.clientWidth;
+    const availH = area.clientHeight;
+    let h = this.recordHeight;
+    let w = Math.round(h * ratio);
+    if (w > availW) { w = availW; h = Math.round(w / ratio); } // 宽度触顶 → 同比缩小
+    if (h > availH) { h = availH; w = Math.round(h * ratio); } // 高度触顶 → 同比缩小（兜底）
+    container.style.width = w + 'px';
+    container.style.height = h + 'px';
+    this.updateRecordSizeHint();
+    setTimeout(() => this.map && this.map.invalidateSize(), 30);
+  },
+
+  /** 更新面板中的「当前画面尺寸」提示 */
+  updateRecordSizeHint() {
+    const hint = document.getElementById('record-size-hint');
+    if (!hint) return;
+    const ratioText = this.recordRatio === '4:3' ? '4:3' : '16:9';
+    const container = document.getElementById('map-container');
+    const w = container && container.style.width ? parseInt(container.style.width, 10) : 0;
+    const h = container && container.style.height ? parseInt(container.style.height, 10) : 0;
+    hint.textContent = w && h
+      ? '当前画面尺寸：' + w + ' × ' + h + '（' + ratioText + '，录制分辨率）'
+      : '当前画面尺寸：自适应（' + ratioText + '，横向顶满）';
   },
 
   /**
@@ -1651,6 +1744,8 @@ const replayPage = {
     const recording = this.recordState === 'RECORDING';
     const ready = this.recordState === 'REGION_READY';
     document.querySelectorAll('input[name="record-ratio"]').forEach(r => { r.disabled = recording; });
+    const heightInput = document.getElementById('input-record-height');
+    if (heightInput) heightInput.disabled = recording;
     const btnGet = document.getElementById('btn-get-region');
     if (btnGet) {
       btnGet.disabled = recording;

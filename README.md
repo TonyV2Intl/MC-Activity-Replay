@@ -13,7 +13,7 @@
 - **网页回放**：多玩家同时回放、变速播放（1x–32x）、逐点步进、进度条拖动跳转、画面中心跟随指定玩家、玩家名字常显/悬停显示、当前坐标/点位序号/站点/线路（MTR）/血量/护甲/推算速度工具提示（显示栏目可选）、跳跃段虚线连接（可开关，距离阈值可调，默认 1000 格）、方向箭头显示模式三选（一直显示/仅未走过显示/一直隐藏）、隐藏未走过的路线（可开关，默认关）、最多显示轨迹点数量（可开关，默认 600 ≈ 前后各 5 分钟，路线随播放动态伸缩）、取消地图缩放等级限制（可开关）、玩家轨迹颜色单独指定
 - **瓦片地图**：Squaremap 瓦片 + Leaflet，方块坐标精确对齐（见下文“瓦片坐标转换”）；支持瓦片镜像地址（回放与采集可用不同地址）与服务器代理下载（浏览器无法直连瓦片上游时经后端中转）
 - **玩家头像**：Minotar 头像标记，按真实 Minecraft yaw 旋转
-- **录屏导出**：独立录制模式保留侧边栏全部控件、隐藏 Leaflet 控件，支持 16:9/4:3 画面比例；「获取录制区域」将采集裁剪到地图区域（Edge/Chrome 132+ RestrictionTarget，不支持时降级录制整个标签页），区域无时间限制可随时反复录制，停止后自动下载 MP4（H.264）
+- **录屏导出**：独立录制模式保留侧边栏全部控件、隐藏 Leaflet 控件，支持 16:9/4:3 画面比例与地图区域高度调节（宽度按比例自动计算）；「获取录制区域」将采集裁剪到地图区域（Edge/Chrome 132+ RestrictionTarget，不支持时降级录制整个标签页），区域无时间限制可随时反复录制，停止后自动下载 MP4（H.264）
 - **会话管理**：重命名、删除、合并（时间段重叠拒绝）、单次会话 JSON/CSV 导入、JSON/CSV/数据库级导出、一键清空数据库
 - **实时监控**：记录中实时查看在线玩家（坐标、当前 MTR 站点/线路、血量/护甲、推算速度）与最近错误日志；刷新间隔跟随轮询间隔，未记录时可手动刷新（有快照显示最后快照，无快照拉取一次实时预览）
 
@@ -260,6 +260,7 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 
 - **界面**：进入后侧边栏控件**全部保留**，仅通过 CSS 隐藏 Leaflet 控件容器（缩放按钮/归属等，`body.recording-mode .leaflet-control-container`），侧边「录制」区显示比例切换（16:9/4:3）与录制面板。`#map-area` 用 flex 居中，`#map-container` 用 `aspect-ratio` + `max-width` 实现横向顶满、上下留空；时间戳 `#timestamp` 是 `#map-container` 的**后代元素**（绝对定位右上角、`pointer-events:none`），因此一定在录制范围内。
 - **比例切换**（仅非录制状态可用）：只改 `#map-container` 尺寸，**不调 `fitBounds`**，地图中心点与缩放级别不变，切换后 `map.invalidateSize()` 重算。
+- **地图区域高度**（仅非录制状态可用）：高度输入框（默认留空=自适应）指定 `#map-container` 的显式高度（px，下限 200，localStorage `mc-replay.recordHeight` 持久化），**宽度 = 高度 × 当前比例**自动计算（16:9 下 720 → 1280 宽）；超出 `#map-area` 可用空间时同比缩小保持比例；留空则清除显式尺寸回归 `aspect-ratio` 自适应。面板内「当前画面尺寸」提示实时显示生效的宽高与模式。REGION_READY 下修改尺寸会提示「若已获取区域，请重新获取以使录制范围生效」（裁剪区域按获取时的容器尺寸固定）。
 - **获取录制区域**（`acquireRegion()`）：`getDisplayMedia({ video: { frameRate: 30 }, selfBrowserSurface: 'include', preferCurrentTab: true, audio: false })`。若浏览器支持 `RestrictionTarget`（Edge/Chrome 132+）则 `RestrictionTarget.fromElement(mapContainer)` + `track.restrictTo()` 把采集**裁剪到地图区域**；不支持或裁剪失败（含用户选错源）则**降级保留未裁剪的原始 stream**，提示「将录制整个标签页，请后期手动裁剪」，仍进入 REGION_READY。用户取消（`NotAllowedError`）则停留 RECORDING_MODE 可重试。
 - **区域有效期**：获取区域后无时间限制，可随时开始/再次录制；仅当用户在浏览器原生 UI 主动停止共享（track `ended` 事件）时才回收区域，提示重新获取。
 - **录制**：「开始录制」创建 `MediaRecorder(stream)` 并 `start(1000)`，**不自动播放回放**；编码仅 MP4/H.264，按 `video/mp4;codecs=avc1.42E01E`（H.264 Baseline）→ `video/mp4;codecs=avc1` → `video/mp4` 优先级探测（Chrome/Edge 107+ 支持），均不支持时拒绝启动并提示（不回退 WebM/VP9），码率 8Mbps，文件名固定 `replay-{sessionId}-{yyyyMMdd-HHmmss}.mp4`，Blob 容器固定 `video/mp4`。开录前会校验 stream 的 video track 仍为 `live`（已被浏览器原生停止共享的流直接录会得到 0KB 文件，此时提示重新获取）。「停止录制」合成 Blob 自动下载，回放继续播放不暂停，stream 保留，可再次录制无需重新获取。REGION_READY 下重取区域会先释放旧 stream 再完整重走流程；RECORDING 下「获取录制区域」与比例切换均禁用。
