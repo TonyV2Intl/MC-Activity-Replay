@@ -34,8 +34,9 @@ async function api(path, options = {}) {
 }
 
 /**
- * UUID 格式化：数据库存储无连字符小写 UUID，MCHeads 等需要带连字符形式。
+ * UUID 格式化：数据库存储无连字符小写 UUID。
  * formatUUID('bfc5393930794fce9cc0717d2cda7b44') => 'bfc53939-3079-4fce-9cc0-717d2cda7b44'
+ * formatUUID('bfc53939-3079-4fce-9cc0-717d2cda7b44', false) => 'bfc5393930794fce9cc0717d2cda7b44'
  */
 function formatUUID(uuid, withHyphens) {
   const clean = String(uuid || '').replace(/-/g, '').toLowerCase();
@@ -45,9 +46,9 @@ function formatUUID(uuid, withHyphens) {
          clean.slice(16, 20) + '-' + clean.slice(20, 32);
 }
 
-/** MCHeads 头像 URL（需要带连字符 UUID；不带尺寸后缀，/32 等路径会 403） */
+/** Minotar 头像 URL（UUID 直接拼接，无需带连字符；可带尺寸后缀如 /64） */
 function avatarURL(uuid) {
-  return 'https://mc-heads.net/avatar/' + formatUUID(uuid, true);
+  return 'https://minotar.net/avatar/' + formatUUID(uuid, false);
 }
 
 /** 时间格式化：YYYY-MM-DD HH:mm:ss（本地时区） */

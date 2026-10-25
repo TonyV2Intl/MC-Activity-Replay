@@ -12,7 +12,7 @@
 - **数据清洗**：MTR 缓存去重（cachedResponseTime）、完全相同的重复位置不写入
 - **网页回放**：多玩家同时回放、变速播放（1x–32x）、逐点步进、进度条拖动跳转、画面中心跟随指定玩家、玩家名字常显/悬停显示、当前坐标/点位序号/站点/线路（MTR）/血量/护甲/推算速度工具提示（显示栏目可选）、跳跃段虚线连接（可开关，距离阈值可调，默认 1000 格）、方向箭头显示模式三选（一直显示/仅未走过显示/一直隐藏）、最多显示轨迹点数量（可开关，默认 600 ≈ 前后各 5 分钟，路线随播放动态伸缩）、取消地图缩放等级限制（可开关）、玩家轨迹颜色单独指定
 - **瓦片地图**：Squaremap 瓦片 + Leaflet，方块坐标精确对齐（见下文“瓦片坐标转换”）；支持瓦片镜像地址（回放与采集可用不同地址）与服务器代理下载（浏览器无法直连瓦片上游时经后端中转）
-- **玩家头像**：MCHeads 头像标记，按真实 Minecraft yaw 旋转
+- **玩家头像**：Minotar 头像标记，按真实 Minecraft yaw 旋转
 - **录屏导出**：独立录制模式保留侧边栏全部控件、隐藏 Leaflet 控件，支持 16:9/4:3 画面比例；「获取录制区域」将采集裁剪到地图区域（Edge/Chrome 132+ RestrictionTarget，不支持时降级录制整个标签页），区域无时间限制可随时反复录制，停止后自动下载 MP4（H.264）
 - **会话管理**：重命名、删除、合并（时间段重叠拒绝）、单次会话 JSON/CSV 导入、JSON/CSV/数据库级导出、一键清空数据库
 - **实时监控**：记录中实时查看在线玩家（坐标、当前 MTR 站点/线路、血量/护甲、推算速度）与最近错误日志；刷新间隔跟随轮询间隔，未记录时可手动刷新（有快照显示最后快照，无快照拉取一次实时预览）
@@ -316,7 +316,7 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 
 ## 注意事项
 
-- UUID 统一以**无连字符小写**存储，MCHeads 请求时前端转换为带连字符格式
+- UUID 统一以**无连字符小写**存储，Minotar 头像请求时直接拼接（`https://minotar.net/avatar/{uuid}`，无需转换格式）
 - 所有时间戳以 UTC（TIMESTAMPTZ）存储，前端展示时转本地时区
 - 容器重启后，未正常停止的会话会被标记为异常终止（`stopped_reason = 'error'`）
 - 合并会话时时间段重叠将直接拒绝
@@ -326,4 +326,4 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 
 ## 技术栈
 
-Go 1.22（Gin + pgx v5）· PostgreSQL 16 + TimescaleDB · 原生 HTML/CSS/JS · Leaflet 1.9.4 · leaflet-trackplayer 2.0.3 · Squaremap 瓦片 · MCHeads 头像 · nginx · Docker Compose
+Go 1.22（Gin + pgx v5）· PostgreSQL 16 + TimescaleDB · 原生 HTML/CSS/JS · Leaflet 1.9.4 · leaflet-trackplayer 2.0.3 · Squaremap 瓦片 · Minotar 头像 · nginx · Docker Compose
