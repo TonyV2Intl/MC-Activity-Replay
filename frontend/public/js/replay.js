@@ -1155,17 +1155,16 @@ const replayPage = {
   },
 
   /**
-   * 头像描边：对标记元素加多层 drop-shadow（沿头像透明通道形成轮廓，
-   * 不受 yaw 旋转影响），颜色取该玩家当前轨迹色；关闭时清空内联样式。
+   * 头像描边：给标记元素加纯色矩形描边——box-shadow 零偏移/零模糊/2px 扩散，
+   * 是一圈边缘锐利的实色矩形框（不是沿透明通道的渐变光晕），颜色取该玩家
+   * 当前轨迹色；随头像一起旋转，关闭时清空内联样式。
    */
   applyAvatarOutline(track) {
     const marker = track.tp ? track.tp.marker : track.marker;
     const el = marker && typeof marker.getElement === 'function' ? marker.getElement() : null;
     if (!el) return;
     const c = track.color;
-    el.style.filter = (this.avatarOutline && c)
-      ? 'drop-shadow(0 0 1px ' + c + ') drop-shadow(0 0 1px ' + c + ') drop-shadow(0 0 2px ' + c + ')'
-      : '';
+    el.style.boxShadow = (this.avatarOutline && c) ? '0 0 0 2px ' + c : '';
   },
 
   /**
