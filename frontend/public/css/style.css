@@ -423,7 +423,19 @@ table.data tr.clickable { cursor: pointer; }
   justify-content: center;
   overflow: hidden;
 }
-#map-container { position: relative; width: 100%; height: 100%; }
+#map-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  /* RestrictionTarget 裁剪资格（element-capture 规格要求目标元素）：
+     形成层叠上下文 + 3D 扁平 + 形成 backdrop root + 单一盒片段 + 被渲染。
+     isolation:isolate 同时满足「层叠上下文」与「backdrop root」，
+     transform-style:flat 为默认值显式声明；对渲染无视觉影响。
+     缺少这些时 restrictTo() 会抛 "Element is not eligible for restriction"，
+     录制将静默降级为整个源（本容器一直因此从未裁剪成功过）。 */
+  isolation: isolate;
+  transform-style: flat;
+}
 #map { position: absolute; inset: 0; background: #0a0c10; }
 
 /* 回放时间戳：#map-container 后代元素，绝对定位右上角，pointer-events:none 不挡地图操作。
@@ -447,10 +459,10 @@ table.data tr.clickable { cursor: pointer; }
   pointer-events: none;
 }
 
-/* 录制保活元素：1×1 近不可见，录制期间由 JS 切换 opacity 触发重绘（见 replay.js）。
+/* 录制保活元素：1×1 近不可见，录制/探活期间由 JS 切换 opacity（0↔1）触发重绘（见 replay.js）。
    两个要点缺一不可：① 必须有实际背景色——全透明元素切 opacity 不产生任何像素差，
    合成器无帧可产；② z-index 必须盖住 Leaflet 瓦片图层（≤1000）——被遮挡时
-   像素变化不可见，同样不产帧。opacity 在 0↔1 间切换，像素差 ≥ 1/255。 */
+   像素变化不可见，同样不产帧。默认 opacity:0 完全不可见，仅活动期间闪烁。 */
 #record-keepalive {
   position: absolute;
   left: 0;
@@ -459,7 +471,7 @@ table.data tr.clickable { cursor: pointer; }
   height: 1px;
   background: rgba(0, 0, 0, 0.02);
   z-index: 2147483647;
-  opacity: 1;
+  opacity: 0;
   pointer-events: none;
 }
 

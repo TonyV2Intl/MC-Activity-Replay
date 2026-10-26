@@ -1607,17 +1607,35 @@ const replayPage = {
 
   /**
    * 获取录制区域：getDisplayMedia（preferCurrentTab + selfBrowserSurface）+
-   * RestrictionTarget 裁剪到 #map-container（Edge 132+）。
+   * RestrictionTarget 裁剪到 #map-container（Edge/Chrome 132+）。
    * - 裁剪成功 → REGION_READY（区域无时间限制，可随时开始录制）
-   * - 不支持 RestrictionTarget 或裁剪失败（含用户选错源）→ 降级保留未裁剪的原始
-   *   stream（录制整个标签页），仍进入 REGION_READY
+   * - 捕获源不是「当前标签页」（displaySurface 为 monitor/window）→ 按规格
+   *   必然无法裁剪，不发起 restrictTo（失败的调用在部分 Edge 版本会把轨道
+   *   卡在无帧状态），录制整个源并明确提示
+   * - 捕获源是当前标签页但裁剪失败 → 降级录制整个标签页（仍可用）
+   * - 轨道探活为零帧（限制变换抑制产帧等）→ 丢弃坏轨道自动重取一次
+   *   （重取不再尝试裁剪），两次都无帧则拒绝进入 REGION_READY 并给出建议
    * - 用户取消 → 停留 RECORDING_MODE 可重试
    * REGION_READY 下重新获取：先释放旧 stream 再完整重走流程。
    */
   async acquireRegion() {
-    if (this.recordState === 'RECORDING') return; // 录制中禁用（按钮亦禁用，双保险）
+    if (this.recordState === 'RECORDING' || this._acquiring) return; // 录制中/获取中禁用
+    this._acquiring = true;
+    try {
+      await this._acquireRegionOnce(false);
+    } finally {
+      this._acquiring = false;
+    }
+  },
+
+  /** 单次获取流程；retry=true 表示探活失败后的自动重取（不再尝试裁剪） */
+  async _acquireRegionOnce(retry) {
     if (this.recordStream) this.releaseRecordStream(); // 重取：先释放旧 stream
-    this.setRecordStatus('等待选择录制源…');
+    // 重新获取期间状态先降级（按钮态与「开始录制」禁用），获取成功再置 REGION_READY
+    this.recordState = this.recordingMode ? 'RECORDING_MODE' : 'off';
+    this.setRecordStatus(retry
+      ? '采集源无画面输出，请重新选择「当前标签页」作为录制源…'
+      : '等待选择录制源…');
     this.updateRecordPanel();
 
     let stream;
@@ -1638,18 +1656,46 @@ const replayPage = {
       return;
     }
 
-    // 优先 RestrictionTarget 裁剪（Edge 132+）；不支持或失败（含选错源）→ 降级保留原始 stream
+    // 采集源类型：browser=当前标签页（可裁剪）；monitor/window=整个屏幕/窗口（按规格不可裁剪）
+    const surface = this._recordSurfaceType(stream);
+    const surfaceText = surface === 'monitor' ? '整个屏幕' : surface === 'window' ? '整个窗口' : null;
+
+    // 仅「当前标签页」源尝试 RestrictionTarget 裁剪（#map-container 已按规格
+    // 加 isolation:isolate 等确保资格；其他源发起也必然失败且可能卡死轨道）
     let cropped = false;
-    try {
-      const track = stream.getVideoTracks()[0];
-      if (window.RestrictionTarget && typeof RestrictionTarget.fromElement === 'function' &&
-          typeof track.restrictTo === 'function') {
-        const restriction = await RestrictionTarget.fromElement(document.getElementById('map-container'));
-        await track.restrictTo(restriction);
-        cropped = true;
+    if (!surfaceText && !retry) {
+      try {
+        const track = stream.getVideoTracks()[0];
+        if (window.RestrictionTarget && typeof RestrictionTarget.fromElement === 'function' &&
+            typeof track.restrictTo === 'function') {
+          const restriction = await RestrictionTarget.fromElement(document.getElementById('map-container'));
+          await track.restrictTo(restriction);
+          cropped = true;
+        }
+      } catch (e) {
+        cropped = false;
+        console.warn('[Replay] RestrictionTarget 裁剪失败，降级录制整个标签页', e);
       }
-    } catch (e) {
-      cropped = false;
+    }
+
+    // 轨道探活：当前标签页捕获时，本页前台 + 保活强制重绘下必须持续产帧；
+    // 零帧说明轨道被卡死（如限制变换抑制产帧——规格规定无效限制目标会
+    // 抑制后续帧），保留它只会录出空视频 → 丢弃重取
+    if (!surfaceText) {
+      const health = await this._probeStreamFrames(stream);
+      if (health === 'dead') {
+        this._stopStream(stream);
+        if (retry) {
+          // 重取后仍然无帧：拒绝进入 REGION_READY，给出排查建议
+          this.recordState = this.recordingMode ? 'RECORDING_MODE' : 'off';
+          this.setRecordStatus('采集源仍然无画面输出。请尝试重新获取区域时选择「整个屏幕」作为录制源，' +
+            '或更换浏览器（Chrome/Edge 107+）后重试');
+          this.updateRecordPanel();
+          return;
+        }
+        await this._acquireRegionOnce(true); // 自动重取一次（重取不再尝试裁剪）
+        return;
+      }
     }
 
     this.recordStream = stream;
@@ -1659,7 +1705,46 @@ const replayPage = {
     this.updateRecordPanel();
     this.setRecordStatus(cropped
       ? '录制区域已就绪（仅地图区域，含时间戳），点击「开始录制」'
-      : '将录制整个标签页，请后期手动裁剪');
+      : surfaceText
+        ? '将录制' + surfaceText + '（无法裁剪到地图区域），请后期手动裁剪；请保持该源有画面变化'
+        : retry
+          ? '裁剪不可用，将录制整个标签页，请后期手动裁剪'
+          : '将录制整个标签页，请后期手动裁剪');
+  },
+
+  /** 采集源类型（getSettings().displaySurface）：browser/window/monitor，取不到返回 '' */
+  _recordSurfaceType(stream) {
+    try {
+      const t = stream.getVideoTracks()[0];
+      const s = t && t.getSettings ? t.getSettings() : {};
+      return (s && s.displaySurface) || '';
+    } catch (e) { return ''; }
+  },
+
+  /** 停止并丢弃一条 stream（未采纳的坏轨道用） */
+  _stopStream(stream) {
+    if (!stream) return;
+    try { stream.getTracks().forEach(t => t.stop()); } catch (e) { /* 忽略 */ }
+  },
+
+  /**
+   * 采集源探活：把 stream 挂到帧观测器上跑约 0.8s，看是否有真实帧到达。
+   * 仅对「当前标签页」源有意义——本页前台 + 保活强制重绘下必须产帧；
+   * 屏幕/窗口源的画面变化取决于外部内容，无法据此判定（调用方已排除）。
+   * @returns {'ok'|'dead'|'skip'|'unknown'} skip=页面在后台；unknown=无帧观测能力
+   */
+  async _probeStreamFrames(stream) {
+    if (document.hidden) return 'skip'; // 页面前台才可能靠保活产帧
+    this.startRecordKeepAlive();        // 借用保活：静止页面也持续重绘
+    Recorder._startFrameMonitor(stream);
+    this.setRecordStatus('正在检查采集源画面输出…');
+    await new Promise(r => setTimeout(r, 800));
+    const active = Recorder.frameMonitorActive;
+    const frames = Recorder.frameCount;
+    Recorder._stopFrameMonitor();
+    this.stopRecordKeepAlive();
+    if (!active) return 'unknown';      // 观测不可用（老浏览器）：不猜
+    return frames > 0 ? 'ok' : 'dead';
   },
 
   /** 开始录制：MediaRecorder(stream) + start，不自动播放回放。
@@ -1724,7 +1809,7 @@ const replayPage = {
       this._keepAliveTimer = null;
     }
     const el = document.getElementById('record-keepalive');
-    if (el) el.style.opacity = '1';
+    if (el) el.style.opacity = '0';
   },
 
   /**
