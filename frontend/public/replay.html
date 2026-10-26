@@ -23,6 +23,12 @@
           <input type="checkbox" id="check-tooltip-permanent">
           <span>常显玩家名字</span>
         </label>
+        <div class="check-group" title="地图头像显示方式（偏好记忆在浏览器本地）">
+          <span>地图头像：</span>
+          <label><input type="checkbox" id="check-fixed-avatar-rotation"> <span>固定朝向</span></label>
+          <label><input type="checkbox" id="check-avatar-outline"> <span>玩家色描边</span></label>
+          <span class="hint">固定朝向：头像始终朝上，不按 yaw 值旋转；玩家色描边：用该玩家轨迹颜色给头像描边</span>
+        </div>
         <div class="speed-mode" title="根据前后坐标点推算移动速度，显示在 tooltip 中">
           <span>速度推算：</span>
           <label><input type="radio" name="speed-mode" value="2"> 最新两点</label>
@@ -41,8 +47,12 @@
         </div>
         <div class="check-group" title="相邻数据点间移动超过设定距离（传送/重连）的轨迹段用虚线绘制，区别于正常移动；距离阈值可调，默认 1000 格">
           <label><input type="checkbox" id="check-dash-jump" checked> <span>跳跃段用虚线连接</span></label>
-          <input type="number" id="input-dash-blocks" min="1" step="100" value="1000" title="跳跃段距离阈值（格）">
+          <input type="number" id="input-dash-blocks" min="1" step="100" value="1000" title="跳跃段距离阈值（格，同时用于「隐藏跳跃段」）">
           <span class="hint">距离阈值可调（格，默认 1000），偏好记忆在浏览器本地；关闭后跳跃段与普通轨迹一样用实线绘制</span>
+        </div>
+        <div class="check-group" title="勾选后完全不绘制跳跃段（传送/重连造成的远距离位移），轨迹在跳跃处断开；距离阈值与「跳跃段用虚线连接」共用，偏好记忆在浏览器本地">
+          <label><input type="checkbox" id="check-hide-jump"> <span>隐藏跳跃段</span></label>
+          <span class="hint">与「跳跃段用虚线连接」共用同一距离阈值；开启后跳跃段（含其上的方向箭头）完全不绘制</span>
         </div>
         <div class="check-group" title="选择轨迹上方向箭头的显示方式（偏好记忆在浏览器本地）">
           <span>方向箭头：</span>

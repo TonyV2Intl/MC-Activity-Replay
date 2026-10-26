@@ -90,6 +90,9 @@ const replayPage = {
 
   dashJump: true,           // 超过设定距离的跳跃段是否用虚线连接（localStorage 持久化）
   dashJumpBlocks: DEFAULT_DASH_JUMP_BLOCKS, // 跳跃段距离阈值（格，可调，默认 1000）
+  hideJump: false,          // 是否完全不绘制跳跃段（与虚线共用阈值，默认关；localStorage 持久化）
+  fixedAvatarRotation: false, // 地图头像是否固定朝向（不按 yaw 旋转；默认关）
+  avatarOutline: false,     // 是否用玩家色给地图头像描边（默认关）
   arrowMode: 'all',         // 方向箭头显示模式：all=一直显示（默认）| notPassed=仅未走过 | none=一直隐藏
   hideNotPassed: false,     // 隐藏未走过的路线（localStorage 持久化，默认关）
   unlimitedZoom: false,     // 是否取消地图最小/最大缩放等级限制（localStorage 持久化，默认关）
@@ -124,6 +127,9 @@ const replayPage = {
       const savedDashBlocks = parseInt(localStorage.getItem('mc-replay.dashJumpBlocks') || '', 10);
       this.dashJumpBlocks = (savedDashBlocks >= MIN_DASH_JUMP_BLOCKS) ? savedDashBlocks : DEFAULT_DASH_JUMP_BLOCKS;
       this.hideNotPassed = localStorage.getItem('mc-replay.hideNotPassed') === '1';
+      this.hideJump = localStorage.getItem('mc-replay.hideJump') === '1';
+      this.fixedAvatarRotation = localStorage.getItem('mc-replay.fixedAvatarRotation') === '1';
+      this.avatarOutline = localStorage.getItem('mc-replay.avatarOutline') === '1';
       const savedRecordHeight = parseInt(localStorage.getItem('mc-replay.recordHeight') || '', 10);
       this.recordHeight = (savedRecordHeight >= MIN_RECORD_HEIGHT) ? savedRecordHeight : 0;
       const savedArrowMode = localStorage.getItem('mc-replay.arrowMode');
@@ -364,6 +370,25 @@ const replayPage = {
     if (dashInput) {
       dashInput.addEventListener('change', () => this.setDashJumpBlocks(dashInput.value));
       this.syncDashBlocksInput();
+    }
+
+    // 隐藏跳跃段（与虚线共用阈值，偏好持久化到 localStorage，切换后重绘即时生效）
+    const hideJumpCb = document.getElementById('check-hide-jump');
+    if (hideJumpCb) {
+      hideJumpCb.checked = this.hideJump;
+      hideJumpCb.addEventListener('change', () => this.setHideJump(hideJumpCb.checked));
+    }
+
+    // 地图头像显示：固定朝向 / 玩家色描边（偏好持久化到 localStorage，切换后即时生效）
+    const fixedRotCb = document.getElementById('check-fixed-avatar-rotation');
+    if (fixedRotCb) {
+      fixedRotCb.checked = this.fixedAvatarRotation;
+      fixedRotCb.addEventListener('change', () => this.setFixedAvatarRotation(fixedRotCb.checked));
+    }
+    const outlineCb = document.getElementById('check-avatar-outline');
+    if (outlineCb) {
+      outlineCb.checked = this.avatarOutline;
+      outlineCb.addEventListener('change', () => this.setAvatarOutline(outlineCb.checked));
     }
 
     // 方向箭头显示模式（偏好持久化到 localStorage，切换后重绘即时生效）
@@ -903,7 +928,22 @@ const replayPage = {
         },
       }).addTo(this.map);
       if (track.tp.marker) {
-        track.tp.marker.options.rotationAngle = normalizeYawAngle(yaws[0]);
+        // 修正插件旋转的叠加缺陷：leaflet-trackplayer 的 _applyRotation 用
+        // `transform += rotateZ(...)` 追加，而打包文件里插件被包含两次、每次定位
+        // 会追加多次，同一角度被叠成多份（如 270°×4=1080°），计算矩阵退化为单位阵
+        // ——头像实际从未按 yaw 旋转。这里换成幂等实现：先剥离历史 rotateZ，
+        // 再追加当前角度（「固定头像朝向」时角度为 0，即完全不旋转）。
+        const m = track.tp.marker;
+        m._applyRotation = function () {
+          const icon = this._icon;
+          if (!icon) return;
+          const base = icon.style.transform.replace(/\s*rotateZ\([^)]*\)/g, '');
+          const a = this.options.rotationAngle;
+          icon.style.transformOrigin = this.options.rotationOrigin || 'center';
+          icon.style.transform = a ? base + ' rotateZ(' + a + 'deg)' : base;
+        };
+        m.options.rotationAngle = this.fixedAvatarRotation ? 0 : normalizeYawAngle(yaws[0]);
+        m._applyRotation(); // 首帧前即应用，避免加载瞬间朝向错误
       }
       // 插件自带的 passed/notPassed 线整体隐藏（opacity:0；箭头装饰不受影响，
       // 仍沿 passed+notPassed 绘制），线条渲染交由下方按 run 分组的自建 polyline
@@ -940,6 +980,8 @@ const replayPage = {
 
     // 玩家名 tooltip：多点轨迹（TrackPlayer 标记）与单点轨迹统一处理
     this.bindPlayerTooltip(track.tp ? track.tp.marker : track.marker, track);
+    // 头像描边（偏好开启时用该玩家轨迹色给头像加描边）
+    this.applyAvatarOutline(track);
 
     this.tracks.set(uuid, track);
 
@@ -1058,12 +1100,90 @@ const replayPage = {
     this.syncDashBlocksInput();
   },
 
-  /** 同步虚线阈值输入框：开关关闭时禁用；非聚焦时同步当前值 */
+  /** 同步虚线阈值输入框：虚线开关与「隐藏跳跃段」都关闭时禁用（阈值对两者共用）；非聚焦时同步当前值 */
   syncDashBlocksInput() {
     const input = document.getElementById('input-dash-blocks');
     if (!input) return;
-    input.disabled = !this.dashJump;
+    input.disabled = !this.dashJump && !this.hideJump;
     if (document.activeElement !== input) input.value = this.dashJumpBlocks;
+  },
+
+  /**
+   * 切换「隐藏跳跃段」（localStorage 持久化，默认关）。
+   * 与「跳跃段用虚线连接」共用 dashJumpBlocks 阈值；runs 已按该阈值分组，
+   * render() 里把跳跃 run 按「窗口外」处理即整段不绘制（含箭头路径剔除），
+   * 因此只置脏重绘、无需重建轨迹图层。
+   */
+  setHideJump(on) {
+    this.hideJump = !!on;
+    try {
+      localStorage.setItem('mc-replay.hideJump', this.hideJump ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) {
+      for (const run of track.runs) run.state = -1;
+    }
+    this.syncDashBlocksInput();
+    this.render();
+  },
+
+  /**
+   * 切换「固定头像朝向」（localStorage 持久化，默认关）：开启后地图头像不再
+   * 按 yaw 旋转（rotationAngle=0），始终朝上。切换时立即重设当前旋转角，
+   * 避免等下一帧（setProgress 在 progress 未变化时会跳过重绘）。
+   */
+  setFixedAvatarRotation(on) {
+    this.fixedAvatarRotation = !!on;
+    try {
+      localStorage.setItem('mc-replay.fixedAvatarRotation', this.fixedAvatarRotation ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) {
+      if (!track.tp || !track.tp.marker) continue;
+      const loc = this.locate(track, this.currentTime);
+      track.tp.marker.setRotationAngle(
+        this.fixedAvatarRotation ? 0 : this.yawAngleAt(track, loc));
+    }
+    this.render();
+  },
+
+  /** 切换「头像描边」（localStorage 持久化，默认关）：用该玩家轨迹色给头像描边 */
+  setAvatarOutline(on) {
+    this.avatarOutline = !!on;
+    try {
+      localStorage.setItem('mc-replay.avatarOutline', this.avatarOutline ? '1' : '0');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    for (const track of this.tracks.values()) this.applyAvatarOutline(track);
+  },
+
+  /**
+   * 头像描边：对标记元素加多层 drop-shadow（沿头像透明通道形成轮廓，
+   * 不受 yaw 旋转影响），颜色取该玩家当前轨迹色；关闭时清空内联样式。
+   */
+  applyAvatarOutline(track) {
+    const marker = track.tp ? track.tp.marker : track.marker;
+    const el = marker && typeof marker.getElement === 'function' ? marker.getElement() : null;
+    if (!el) return;
+    const c = track.color;
+    el.style.filter = (this.avatarOutline && c)
+      ? 'drop-shadow(0 0 1px ' + c + ') drop-shadow(0 0 1px ' + c + ') drop-shadow(0 0 2px ' + c + ')'
+      : '';
+  },
+
+  /**
+   * 箭头装饰路径：返回 [lo, hi] 范围内用于铺箭头的折线数组。
+   * 隐藏跳跃段开启时按 run 分组剔除跳跃段（否则空线段上仍会浮着箭头）；
+   * 未开启时保持原有的单条整段切片行为。
+   */
+  arrowPaths(track, lo, hi) {
+    if (lo > hi) return [];
+    if (!this.hideJump) return [track.latlngs.slice(lo, hi + 1)];
+    const paths = [];
+    for (const run of track.runs) {
+      if (run.dash) continue;
+      const s = Math.max(run.startIdx, lo);
+      const e = Math.min(run.endIdx, hi);
+      if (s < e) paths.push(track.latlngs.slice(s, e + 1));
+    }
+    return paths;
   },
 
   /**
@@ -1283,9 +1403,11 @@ const replayPage = {
         }
         // 每帧先停掉插件内部循环（setProgress 到过终点后会启动它）
         if (!track.tp.isPaused) track.tp.pause();
-        // 旋转角需在 setProgress（内部 setLatLng → _setPos → _applyRotation）之前设置
+        // 旋转角需在 setProgress（内部 setLatLng → _setPos → _applyRotation）之前设置；
+        // 「固定头像朝向」开启时恒为 0（不做 yaw 旋转）
         if (track.tp.marker) {
-          track.tp.marker.options.rotationAngle = this.yawAngleAt(track, loc);
+          track.tp.marker.options.rotationAngle = this.fixedAvatarRotation
+            ? 0 : this.yawAngleAt(track, loc);
         }
         track.tp.setProgress(e);
         // 最多显示轨迹点数量：窗口 [wLo, wHi] 以当前时刻所在点为中心，总数不超过
@@ -1315,9 +1437,9 @@ const replayPage = {
         } else if (this.arrowMode === 'notPassed') {
           // 未走部分起点：当前时刻所在点（before → 窗口起点；after → 已全部走过）
           const from = loc.after ? wHi + 1 : Math.max(wLo, loc.i);
-          track.tp.polylineDecorator.setPaths(from > wHi ? [] : [track.latlngs.slice(from, wHi + 1)]);
+          track.tp.polylineDecorator.setPaths(this.arrowPaths(track, from, wHi));
         } else {
-          track.tp.polylineDecorator.setPaths([track.latlngs.slice(wLo, wHi + 1)]);
+          track.tp.polylineDecorator.setPaths(this.arrowPaths(track, wLo, wHi));
         }
         // 更新按 run 分组的折线：D = 当前累积距离（haversine），
         // 与可见切片的 cum 比较得到 未开始 / 部分走过 / 已走过 / 窗口外 四态，
@@ -1333,6 +1455,8 @@ const replayPage = {
             else if (D >= track.cum[ve]) st = 2; // 可见部分已全部走过
             else if (D <= track.cum[vs]) st = 0; // 可见部分尚未开始
             else st = 1;                         // 部分走过
+            // 隐藏跳跃段：跳跃 run 整段按「窗口外」处理（两条折线清空、轨迹断开）
+            if (this.hideJump && run.dash) st = 3;
             let segIdx = -1, alpha = 0;
             if (st === 1) {
               // 拆分段必落在 [vs, ve-1]：由 cum[vs] < D < cum[ve] 可证；
