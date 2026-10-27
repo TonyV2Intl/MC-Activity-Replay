@@ -571,6 +571,15 @@ body.recording-mode #playback-bar { opacity: 0; pointer-events: none; }
 }
 .pb-time-sep { opacity: 0.5; margin: 0 2px; }
 #speed-select { flex: none; width: auto; padding: 4px 6px; }
+/* 自定义播放倍数：仅在速度选择「自定义…」时显示。
+   用 ID + 类提高特异性，覆盖全局 input[type=number] 的 width:100% */
+#playback-bar input.pb-speed-custom {
+  flex: none;
+  width: 76px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.pb-speed-custom[hidden] { display: none; }
 
 /* ---------- 回放页：玩家行「⋯」菜单 ---------- */
 .player-menu-btn {

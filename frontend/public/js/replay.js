@@ -332,6 +332,19 @@ const replayPage = {
       });
     }
 
+    // 自定义播放倍数（选择「自定义…」后出现的输入框）
+    const speedCustom = document.getElementById('speed-custom');
+    if (speedCustom) {
+      speedCustom.addEventListener('change', () => this.applyCustomSpeed());
+      speedCustom.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.applyCustomSpeed();
+          speedCustom.blur();
+        }
+      });
+    }
+
     // 键盘快捷键：空格 播放/暂停，左右方向键 步进
     document.addEventListener('keydown', (e) => {
       if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
@@ -1418,16 +1431,19 @@ const replayPage = {
   },
 
   /**
-   * 头像描边：给标记元素加纯色矩形描边——box-shadow 零偏移/零模糊/5px 扩散，
-   * 是一圈边缘锐利的实色矩形框（不是沿透明通道的渐变光晕），颜色取该玩家
-   * 当前轨迹色；随头像一起旋转，关闭时清空内联样式。
+   * 头像描边：给标记元素加纯色圆角描边——box-shadow 零偏移/零模糊/5px 扩散，
+   * 是一圈边缘锐利的实色框（不是沿透明通道的渐变光晕），颜色取该玩家当前
+   * 轨迹色；同时给元素 4px 圆角，头像与描边一起变成小圆角矩形（box-shadow
+   * 会跟随 border-radius）。随头像一起旋转，关闭时清空内联样式。
    */
   applyAvatarOutline(track) {
     const marker = track.tp ? track.tp.marker : track.marker;
     const el = marker && typeof marker.getElement === 'function' ? marker.getElement() : null;
     if (!el) return;
     const c = track.color;
-    el.style.boxShadow = (this.avatarOutline && c) ? '0 0 0 5px ' + c : '';
+    const on = this.avatarOutline && c;
+    el.style.boxShadow = on ? '0 0 0 5px ' + c : '';
+    el.style.borderRadius = on ? '4px' : '';
   },
 
   /**
@@ -1595,8 +1611,36 @@ const replayPage = {
     this.updatePlayButton();
   },
 
+  /**
+   * 设置播放速度（倍）。传入 'custom' 表示切到自定义输入框（不立即改速度）；
+   * 自定义倍数由 applyCustomSpeed() 校验后生效。
+   */
   setSpeed(v) {
+    const custom = document.getElementById('speed-custom');
+    if (v === 'custom') {
+      if (custom) {
+        custom.hidden = false;
+        custom.value = String(this.speed);
+        custom.focus();
+        custom.select();
+      }
+      return;
+    }
     this.speed = Number(v) || 1;
+    if (custom) custom.hidden = true;
+  },
+
+  /** 应用自定义倍数：0.1–1000，非法输入回退当前速度（回车或失焦触发） */
+  applyCustomSpeed() {
+    const inp = document.getElementById('speed-custom');
+    if (!inp) return;
+    const v = parseFloat(inp.value);
+    if (!Number.isFinite(v) || v <= 0) {
+      inp.value = String(this.speed);
+      return;
+    }
+    this.speed = Math.min(1000, Math.max(0.1, v));
+    inp.value = String(this.speed);
   },
 
   /** 上一个轨迹点（暂停并跳转） */
