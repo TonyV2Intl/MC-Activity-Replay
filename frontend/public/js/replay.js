@@ -1155,7 +1155,7 @@ const replayPage = {
   },
 
   /**
-   * 头像描边：给标记元素加纯色矩形描边——box-shadow 零偏移/零模糊/2px 扩散，
+   * 头像描边：给标记元素加纯色矩形描边——box-shadow 零偏移/零模糊/5px 扩散，
    * 是一圈边缘锐利的实色矩形框（不是沿透明通道的渐变光晕），颜色取该玩家
    * 当前轨迹色；随头像一起旋转，关闭时清空内联样式。
    */
@@ -1164,7 +1164,7 @@ const replayPage = {
     const el = marker && typeof marker.getElement === 'function' ? marker.getElement() : null;
     if (!el) return;
     const c = track.color;
-    el.style.boxShadow = (this.avatarOutline && c) ? '0 0 0 2px ' + c : '';
+    el.style.boxShadow = (this.avatarOutline && c) ? '0 0 0 5px ' + c : '';
   },
 
   /**

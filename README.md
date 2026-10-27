@@ -204,7 +204,7 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 
 方向旋转关闭插件自带的 turf 方位角，改为按真实 Minecraft yaw 插值（屏幕朝向角 = 180° + yaw），可用「地图头像 → 固定朝向」关闭旋转（见下）。
 
-地图头像显示：默认按 yaw 插值旋转（`render()` 每帧在 `setProgress` 前写 `rotationAngle`）。回放页「地图头像」两个开关（localStorage `mc-replay.fixedAvatarRotation` / `mc-replay.avatarOutline`，均默认关）：**固定朝向**开启后 `rotationAngle` 恒为 0，且切换时对每个标记调用 `setRotationAngle(0)`（经 `_setPos` 重置 transform，避免残留上一次的 rotateZ，因为 `setProgress` 在进度未变化时会跳过重绘）；**玩家色描边**开启后给标记元素加纯色矩形框（`box-shadow: 0 0 0 2px 玩家轨迹色`——零偏移、零模糊、无渐变，边缘锐利，随头像一起旋转），颜色取该玩家当前轨迹色（含手动指定色，颜色变更重建轨迹时自动重应用），关闭时清空内联 `box-shadow`。
+地图头像显示：默认按 yaw 插值旋转（`render()` 每帧在 `setProgress` 前写 `rotationAngle`）。回放页「地图头像」两个开关（localStorage `mc-replay.fixedAvatarRotation` / `mc-replay.avatarOutline`，均默认关）：**固定朝向**开启后 `rotationAngle` 恒为 0，且切换时对每个标记调用 `setRotationAngle(0)`（经 `_setPos` 重置 transform，避免残留上一次的 rotateZ，因为 `setProgress` 在进度未变化时会跳过重绘）；**玩家色描边**开启后给标记元素加纯色矩形框（`box-shadow: 0 0 0 5px 玩家轨迹色`——零偏移、零模糊、无渐变，边缘锐利，随头像一起旋转），颜色取该玩家当前轨迹色（含手动指定色，颜色变更重建轨迹时自动重应用），关闭时清空内联 `box-shadow`。
 
 画面跟随：`render()` 每帧渲染结束后，若 `followUuid` 非空则取该玩家标记的 `getLatLng()` 调用 `map.panTo(..., {animate: false})` 使其保持居中（播放、拖动进度条、步进时均生效）；地图 `dragstart` 事件触发即自动取消跟随（`panTo` 不触发该事件，不会自我取消）；取消勾选或移除被跟随玩家轨迹时同步清除跟随状态。
 
