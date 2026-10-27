@@ -2069,7 +2069,9 @@ const replayPage = {
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 },
+        // cursor:'never' 请求不把鼠标指针合成进画面：对「整个屏幕/窗口」源生效，
+        // 「当前标签页」源多数实现本来就不含光标（会忽略该约束）
+        video: { frameRate: 30, cursor: 'never' },
         selfBrowserSurface: 'include',
         preferCurrentTab: true,
         audio: false,

@@ -13,8 +13,8 @@
  *
  * 帧观测：MediaRecorder 的 dataavailable 受 timeslice 与编码格式影响（MP4 可能
  * 只在 stop 时产出），不能用来判断「有没有画面」；这里用 MediaStreamTrackProcessor
- * （降级：隐藏 video + rVFC）独立统计真实到达的帧（frameCount），供回放页录制中
- * 看护（watchdog）与失败原因分支使用，与编码/分片机制无关。
+ * 直接从轨道读帧独立统计（frameCount），供回放页录制中看护（watchdog）与失败
+ * 原因分支使用，与编码/分片机制无关。
  */
 
 // 空数据时的失败原因（展示给用户；未切后台的无帧场景）
@@ -31,8 +31,7 @@ const Recorder = {
   diag: {},               // 最近一次录制的诊断信息（失败排查用）
   frameCount: 0,          // 录制期间实际到达的视频帧数（帧观测器统计）
   frameMonitorActive: false, // 帧观测是否生效（决定了回放页 watchdog 能否工作）
-  _monitorReader: null,   // MediaStreamTrackProcessor 的 reader（首选方案）
-  _monitorVideo: null,    // 降级方案的隐藏 video
+  _monitorReader: null,   // MediaStreamTrackProcessor 的 reader
   _hiddenSince: null,     // 进入后台的时刻（performance.now），null=当前在前台
 
   isRecording() {
@@ -78,68 +77,35 @@ const Recorder = {
   /**
    * 帧观测：统计录制期间真实到达的视频帧。MediaRecorder 的 dataavailable 受
    * timeslice 与编码格式影响（MP4 可能只在 stop 时产出），不能用来判断
-   * 「有没有画面」，故独立计数：
-   *   首选 MediaStreamTrackProcessor——直接从轨道读帧，不依赖 video 播放，
-   *     无帧流下也能正常工作（这正是看护判定 0KB 风险所需要的）；
-   *   降级 隐藏 video + requestVideoFrameCallback——需要 video 成功开始播放，
-   *     无帧流时 play() 会一直 pending（观测不生效 → watchdog 自动禁用）。
+   * 「有没有画面」，故用 MediaStreamTrackProcessor 直接从轨道读帧独立计数。
+   * 它不依赖 video 播放，零帧流下也能立即判定（看护识别 0KB 风险正需要这点）。
    * 观测器只是轨道的「旁路 tap」：不与 MediaRecorder 争帧，cancel 不会结束轨道。
+   * 不支持 MSTP 的浏览器（Chrome/Edge < 94）放弃观测，看护自动禁用。
    */
   _startFrameMonitor(stream) {
     this._stopFrameMonitor();
     this.frameCount = 0;
     this.frameMonitorActive = false;
     const track = stream.getVideoTracks()[0];
-    if (!track) return;
-    // 首选：MediaStreamTrackProcessor
-    if (typeof MediaStreamTrackProcessor !== 'undefined') {
-      try {
-        const reader = new MediaStreamTrackProcessor(track).readable.getReader();
-        this._monitorReader = reader;
-        this.frameMonitorActive = true;
-        const pump = async () => {
-          try {
-            while (this._monitorReader) {
-              const { value, done } = await reader.read();
-              if (done) break;
-              this.frameCount++;
-              if (value && typeof value.close === 'function') value.close(); // 释放 VideoFrame
-            }
-          } catch (e) { /* 观测中止（轨道结束/cancel） */ }
-        };
-        pump();
-        return;
-      } catch (e) { /* 落到降级方案 */ }
+    if (!track || typeof MediaStreamTrackProcessor === 'undefined') return;
+    try {
+      const reader = new MediaStreamTrackProcessor(track).readable.getReader();
+      this._monitorReader = reader;
+      this.frameMonitorActive = true;
+      const pump = async () => {
+        try {
+          while (this._monitorReader) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            this.frameCount++;
+            if (value && typeof value.close === 'function') value.close(); // 释放 VideoFrame
+          }
+        } catch (e) { /* 观测中止（轨道结束/cancel） */ }
+      };
+      pump();
+    } catch (e) {
+      this.frameMonitorActive = false; // 构造/读流失败：放弃观测
     }
-    // 降级：隐藏 video + requestVideoFrameCallback
-    let v;
-    try {
-      v = document.createElement('video');
-      v.muted = true;
-      v.playsInline = true;
-      v.setAttribute('aria-hidden', 'true');
-      v.setAttribute('data-recorder-monitor', '1');
-      v.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;' +
-        'opacity:0;pointer-events:none;';
-      v.srcObject = stream;
-    } catch (e) { return; }
-    if (!v.requestVideoFrameCallback) return; // 老浏览器：放弃帧观测
-    this._monitorVideo = v;
-    const tick = () => {
-      this.frameCount++;
-      if (this._monitorVideo) this._monitorVideo.requestVideoFrameCallback(tick);
-    };
-    v.requestVideoFrameCallback(tick);
-    try { document.body.appendChild(v); } catch (e) { /* 不挂 DOM 也能播，继续 */ }
-    try {
-      const p = v.play();
-      if (p && typeof p.then === 'function') {
-        p.then(() => { this.frameMonitorActive = true; })
-          .catch(() => { this._stopFrameMonitor(); });
-      } else {
-        this.frameMonitorActive = true;
-      }
-    } catch (e) { /* play 同步抛错：放弃观测 */ }
   },
 
   _stopFrameMonitor() {
@@ -148,13 +114,6 @@ const Recorder = {
     this.frameMonitorActive = false;
     if (reader) {
       try { reader.cancel(); } catch (e) { /* 忽略 */ }
-    }
-    const v = this._monitorVideo;
-    this._monitorVideo = null;
-    if (v) {
-      try { v.pause(); } catch (e) { /* 忽略 */ }
-      try { v.srcObject = null; } catch (e) { /* 忽略 */ }
-      try { v.remove(); } catch (e) { /* 忽略 */ }
     }
   },
 
@@ -167,7 +126,8 @@ const Recorder = {
   start(stream, baseName) {
     if (this.isRecording()) return false;
     this.mimeType = this.pickMimeType();
-    this._hiddenSince = null;
+    // 开始录制时页面已在后台也要计入（否则整段后台录制会漏报为「无帧」）
+    this._hiddenSince = document.hidden ? performance.now() : null;
     this.diag = {
       ua: navigator.userAgent,
       mimeType: this.mimeType,
