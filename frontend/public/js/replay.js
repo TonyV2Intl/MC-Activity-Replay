@@ -85,6 +85,7 @@ const replayPage = {
 
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
   selectedUuid: null,       // 列表中选中的玩家 uuid（null = 未选中）：进度条高亮其数据覆盖时间段
+  _selectAllToken: 0,       // 全选加载代际：取消全选时自增，用于中止排队中的加载
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
@@ -345,6 +346,12 @@ const replayPage = {
       });
     }
 
+    // 一键全选玩家
+    const allPlayers = document.getElementById('check-all-players');
+    if (allPlayers) {
+      allPlayers.addEventListener('change', () => this.toggleAllPlayers(allPlayers.checked));
+    }
+
     // 键盘快捷键：空格 播放/暂停，左右方向键 步进
     document.addEventListener('keydown', (e) => {
       if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
@@ -521,7 +528,10 @@ const replayPage = {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.dataset.uuid = p.uuid;
-      cb.addEventListener('change', () => this.togglePlayer(p.uuid, cb.checked));
+      cb.addEventListener('change', () => {
+        this.togglePlayer(p.uuid, cb.checked);
+        this.updateSelectAllState();
+      });
 
       const img = document.createElement('img');
       img.src = avatarURL(p.uuid);
@@ -555,6 +565,64 @@ const replayPage = {
     }
     this.updateFollowButtons();
     this.updateSelectionUI();
+    this.updateSelectAllState();
+  },
+
+  /* ---------- 一键全选 ---------- */
+
+  /**
+   * 全选/取消全选玩家。
+   *   勾选：先把所有复选框置为选中，再以 2 路并发加载轨迹（一次加载几十个
+   *   玩家会同时打出大量分块请求）；_selectAllToken 用于取消时中止排队。
+   *   取消：立即取消勾选并移除已加载轨迹；仍在途的 loadTrack 完成后会因
+   *   复选框未选而自行 removeTrack（见 loadTrack 末尾的竞态检查）。
+   * 全选框本身支持半选（indeterminate）表示部分玩家被选中。
+   */
+  async toggleAllPlayers(on) {
+    const boxes = [...document.querySelectorAll('#player-list input[data-uuid]')];
+    if (!boxes.length) return;
+    const token = ++this._selectAllToken;
+
+    if (!on) {
+      for (const cb of boxes) {
+        if (!cb.checked) continue;
+        cb.checked = false;
+        this.removeTrack(cb.dataset.uuid);
+      }
+      this.updateSelectAllState();
+      return;
+    }
+
+    for (const cb of boxes) cb.checked = true;
+    this.updateSelectAllState();
+
+    const queue = boxes.map((cb) => cb.dataset.uuid)
+      .filter((uuid) => !this.tracks.has(uuid) && !this.loadingTracks.has(uuid));
+    if (!queue.length) return;
+    this.setLoadStatus('正在加载 ' + queue.length + ' 名玩家的轨迹…');
+
+    const worker = async () => {
+      while (queue.length && token === this._selectAllToken) {
+        const uuid = queue.shift();
+        if (token !== this._selectAllToken) return; // 已取消全选
+        if (this.tracks.has(uuid) || this.loadingTracks.has(uuid)) continue;
+        try {
+          await this.loadTrack(uuid);
+        } catch (e) { /* 单个玩家失败不阻断其余加载 */ }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (token === this._selectAllToken) this.updateSelectAllState();
+  },
+
+  /** 同步全选框：全部选中=checked，部分选中=indeterminate，其余 unchecked */
+  updateSelectAllState() {
+    const all = document.getElementById('check-all-players');
+    if (!all) return;
+    const boxes = [...document.querySelectorAll('#player-list input[data-uuid]')];
+    const picked = boxes.filter((cb) => cb.checked).length;
+    all.checked = boxes.length > 0 && picked === boxes.length;
+    all.indeterminate = picked > 0 && picked < boxes.length;
   },
 
   /* ---------- 玩家行操作菜单 ---------- */
@@ -828,6 +896,7 @@ const replayPage = {
       const cb = document.querySelector('#player-list input[data-uuid="' + uuid + '"]');
       if (cb) cb.checked = false;
       this.removeTrack(uuid);
+      this.updateSelectAllState();
       this.setLoadStatus('已删除最后一个数据点，该玩家已从地图移除');
     } else {
       this.rebuildTrack(uuid);
