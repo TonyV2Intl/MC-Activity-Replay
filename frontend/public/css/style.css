@@ -416,6 +416,7 @@ table.data tr.clickable { cursor: pointer; }
 
 /* 地图区：默认撑满整个右侧；录制模式下 flex 居中，容器按比例横向顶满、上下留空 */
 #map-area {
+  position: relative; /* 播放控制条的定位基准 */
   flex: 1;
   min-width: 0;
   display: flex;
@@ -476,6 +477,271 @@ table.data tr.clickable { cursor: pointer; }
 }
 
 .back-btn { margin-bottom: 4px; }
+
+/* ---------- 回放页：地图下方播放控制条 ---------- */
+/* 位于 #map-container 之外（绝对定位于 #map-area 底部居中）：
+   录制裁剪到地图区域时不会进入画面；录制模式下整体隐藏保持画面干净。
+   进度条轨道自绘，原生 range 透明覆盖在其上负责拖动与键盘交互。 */
+#playback-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(780px, calc(100% - 40px));
+  padding: 8px 12px;
+  background: rgba(18, 20, 26, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.15s;
+}
+body.recording-mode #playback-bar { opacity: 0; pointer-events: none; }
+
+.pb-btn {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#btn-play { min-width: 76px; }
+
+/* 时间轴：底轨 / 选中玩家高亮段 / 已播放段 / 手柄，均按百分比定位 */
+.pb-timeline { position: relative; flex: 1; min-width: 80px; height: 20px; }
+.pb-track {
+  position: absolute;
+  left: 0; right: 0; top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  background: #2b303b;
+  border-radius: 3px;
+}
+.pb-selected {
+  position: absolute;
+  top: 50%;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 4px;
+  opacity: 0.9;
+  /* 比轨道高 4px 并带描边：玩家色恰好与主题青色相近时仍能看清区间边界 */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+}
+.pb-played {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.32);
+  pointer-events: none;
+}
+.pb-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+.pb-timeline input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0; /* 透明覆盖：保留原生拖动/键盘行为 */
+  cursor: pointer;
+}
+.pb-time {
+  flex: none;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pb-time-sep { opacity: 0.5; margin: 0 2px; }
+#speed-select { flex: none; width: auto; padding: 4px 6px; }
+
+/* ---------- 回放页：玩家行「⋯」菜单 ---------- */
+.player-menu-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.player-menu-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border);
+}
+.player-item.selected {
+  background: rgba(0, 229, 255, 0.12);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.player-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+}
+.player-menu .menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.player-menu .menu-row > span { flex: 1; }
+.player-menu .player-color {
+  width: 30px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  flex: none;
+}
+.player-menu .player-color::-webkit-color-swatch-wrapper { padding: 1px; }
+.player-menu .player-color::-webkit-color-swatch { border: none; border-radius: 3px; }
+.player-menu .color-auto {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex: none;
+}
+.player-menu .menu-item {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+}
+.player-menu .menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+  color: var(--text);
+}
+.player-menu .menu-item.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #062f33;
+  font-weight: 600;
+}
+.player-menu .menu-item.danger { color: var(--danger); }
+.player-menu .menu-item.danger:hover { background: rgba(255, 82, 82, 0.12); }
+
+/* ---------- 控制台：会话「导出」格式选择菜单 ---------- */
+.export-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 130px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+}
+.export-menu[hidden] { display: none; }
+.export-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+}
+.export-menu button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+  color: var(--text);
+}
+
+/* ---------- 通用模态框（时间段导出） ---------- */.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal-mask[hidden] { display: none; }
+.modal {
+  width: 390px;
+  max-width: calc(100vw - 32px);
+  padding: 18px 20px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+.modal h3 {
+  margin: 0 0 14px;
+  font-size: 14px;
+  color: var(--accent);
+}
+.modal .form-row { margin-bottom: 10px; }
+.modal .form-row > label { min-width: 48px; }
+.modal input[type="datetime-local"] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.modal input[type="datetime-local"]:focus { outline: none; border-color: var(--accent); }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
 
 /* ---------- 录制模式：保留侧边栏，隐藏 Leaflet 控件，地图按比例居中 ---------- */
 body.recording-mode #map-container {

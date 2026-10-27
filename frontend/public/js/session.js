@@ -15,6 +15,27 @@ const sessionPage = {
       }
       this.render();
     });
+
+    // 「导出」格式选择菜单（点导出后选 JSON / CSV）
+    const exportMenu = document.getElementById('session-export-menu');
+    if (exportMenu) {
+      exportMenu.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-format]');
+        if (!btn) return;
+        this.exportSession(this._exportMenuSession, btn.dataset.format);
+        this.closeExportMenu();
+      });
+    }
+
+    // 时间段导出对话框
+    const modal = document.getElementById('session-export-modal');
+    if (modal) {
+      document.getElementById('session-export-cancel').addEventListener('click', () => this.closePeriodExport());
+      document.getElementById('session-export-ok').addEventListener('click', () => this.submitPeriodExport());
+      modal.addEventListener('pointerdown', (e) => {
+        if (e.target === modal) this.closePeriodExport();
+      });
+    }
   },
 
   async refresh() {
@@ -51,12 +72,26 @@ const sessionPage = {
         '<td>' + fmtNum(s.point_count) + '</td>' +
         '<td class="actions">' +
           '<button class="small" onclick="event.stopPropagation();sessionPage.rename(' + s.id + ')">重命名</button> ' +
-          '<button class="small" onclick="event.stopPropagation();sessionPage.exportSession(' + s.id + ',\'json\')">JSON</button> ' +
-          '<button class="small" onclick="event.stopPropagation();sessionPage.exportSession(' + s.id + ',\'csv\')">CSV</button> ' +
+          '<button class="small" data-export="' + s.id + '">导出</button> ' +
+          '<button class="small" data-period="' + s.id + '">时间段导出</button> ' +
           '<button class="small danger" onclick="event.stopPropagation();sessionPage.remove(' + s.id + ')">删除</button>' +
         '</td>' +
       '</tr>';
     }).join('');
+
+    // 「导出」（选格式）/「时间段导出」按钮
+    tbody.querySelectorAll('[data-export]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        this.openExportMenu(parseInt(btn.getAttribute('data-export'), 10), btn);
+      });
+    });
+    tbody.querySelectorAll('[data-period]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        this.openPeriodExport(parseInt(btn.getAttribute('data-period'), 10));
+      });
+    });
 
     // 行点击 → 跳转回放页（进行中的会话不可回放）
     tbody.querySelectorAll('tr.clickable').forEach(tr => {
@@ -112,6 +147,88 @@ const sessionPage = {
 
   exportSession(id, format) {
     location.href = '/api/sessions/' + id + '/export?format=' + format;
+  },
+
+  /* ---------- 导出：格式选择与时间段导出 ---------- */
+
+  /** 在「导出」按钮下方弹出 JSON / CSV 选择菜单 */
+  openExportMenu(id, anchor) {
+    const menu = document.getElementById('session-export-menu');
+    if (!menu) return;
+    this._exportMenuSession = id;
+    menu.hidden = false;
+
+    const r = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth || 130;
+    const mh = menu.offsetHeight || 76;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - mw - 8));
+    let top = r.bottom + 4;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+
+    if (!this._exportMenuHandler) {
+      this._exportMenuHandler = (ev) => {
+        const m = document.getElementById('session-export-menu');
+        if (!m || m.hidden) return;
+        if (!m.contains(ev.target) && !ev.target.closest('[data-export]')) this.closeExportMenu();
+      };
+      document.addEventListener('pointerdown', this._exportMenuHandler, true);
+    }
+  },
+
+  closeExportMenu() {
+    const menu = document.getElementById('session-export-menu');
+    if (menu) menu.hidden = true;
+    if (this._exportMenuHandler) {
+      document.removeEventListener('pointerdown', this._exportMenuHandler, true);
+      this._exportMenuHandler = null;
+    }
+    this._exportMenuSession = null;
+  },
+
+  /** 打开时间段导出对话框：默认填入会话起止时间 */
+  openPeriodExport(id) {
+    const s = this.sessions.find(x => x.id === id);
+    if (!s) return;
+    this._periodSession = id;
+    const a = new Date(s.started_at).getTime();
+    const b = s.stopped_at ? new Date(s.stopped_at).getTime() : Date.now();
+    document.getElementById('session-export-title').textContent = '导出时间段 — ' + s.name;
+    document.getElementById('session-export-start').value = toDatetimeLocal(a);
+    document.getElementById('session-export-end').value = toDatetimeLocal(b);
+    document.getElementById('session-export-modal').hidden = false;
+  },
+
+  closePeriodExport() {
+    const m = document.getElementById('session-export-modal');
+    if (m) m.hidden = true;
+    this._periodSession = null;
+  },
+
+  /** 提交时间段导出：起止时间转 UTC 后请求导出 API（附件下载） */
+  submitPeriodExport() {
+    const id = this._periodSession;
+    if (!id) return;
+    const sEl = document.getElementById('session-export-start');
+    const eEl = document.getElementById('session-export-end');
+    const st = new Date(sEl.value).getTime();
+    let et = new Date(eEl.value).getTime();
+    if (!sEl.value || !eEl.value || !isFinite(st) || !isFinite(et)) {
+      alert('请填写有效的开始与结束时间');
+      return;
+    }
+    if (et < st) {
+      alert('结束时间不能早于开始时间');
+      return;
+    }
+    et += 999; // datetime-local 精确到秒：让所选结束时刻包含该秒内的数据点
+    const fmt = document.querySelector('input[name="session-export-format"]:checked').value;
+    const url = '/api/sessions/' + id + '/export?format=' + fmt +
+      '&start=' + encodeURIComponent(new Date(st).toISOString()) +
+      '&end=' + encodeURIComponent(new Date(et).toISOString());
+    this.closePeriodExport();
+    location.href = url;
   },
 
   async mergeSelected() {

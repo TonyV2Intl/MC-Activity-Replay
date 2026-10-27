@@ -82,30 +82,11 @@
         </div>
       </div>
 
-      <div class="section playback-controls">
+      <div class="section">
         <h3>播放控制</h3>
-        <div class="row">
-          <button class="primary" id="btn-play" onclick="replayPage.togglePlay()" style="min-width: 76px;">▶ 播放</button>
-          <button onclick="replayPage.stepPrev()" title="上一个点">⏮ 上一点</button>
-          <button onclick="replayPage.stepNext()" title="下一个点">下一点 ⏭</button>
-        </div>
-        <div class="row">
-          <input type="range" id="progress-bar" min="0" max="100" value="0" step="1">
-        </div>
-        <div class="row">
-          <label>速度</label>
-          <select id="speed-select" onchange="replayPage.setSpeed(this.value)">
-            <option value="1">1x</option>
-            <option value="2">2x</option>
-            <option value="4">4x</option>
-            <option value="8">8x</option>
-            <option value="16">16x</option>
-            <option value="32">32x</option>
-          </select>
-        </div>
-        <div class="time-display">
-          <span id="time-current">--:--:--</span>
-          <span id="time-total">--:--:--</span>
+        <div class="hint">
+          进度条与播放按钮位于地图下方；空格播放/暂停、←/→ 单点步进。
+          选中玩家后进度条会高亮其数据覆盖的时间段。
         </div>
       </div>
 
@@ -146,6 +127,60 @@
              使「当前标签页」捕获源在画面静止时仍持续产出视频帧。
              必须有背景色且 z-index 盖住瓦片图层，否则像素零变化不产帧（见 style.css） -->
         <div id="record-keepalive" aria-hidden="true"></div>
+      </div>
+
+      <!-- 播放控制条：固定在地图区域底部居中（#map-container 之外，
+           录制裁剪到地图区域时不会进入画面）。进度条以自绘轨道实现：
+           选中玩家时在其数据覆盖的时间段叠一段玩家色高亮。 -->
+      <div id="playback-bar">
+        <button class="pb-btn" id="btn-play" onclick="replayPage.togglePlay()" title="播放/暂停（空格）">▶ 播放</button>
+        <button class="pb-btn" id="btn-prev" onclick="replayPage.stepPrev()" title="上一个点（←）">⏮</button>
+        <button class="pb-btn" id="btn-next" onclick="replayPage.stepNext()" title="下一个点（→）">⏭</button>
+        <div class="pb-timeline" id="pb-timeline" title="拖动跳转">
+          <div class="pb-track"></div>
+          <div class="pb-selected" id="pb-selected" hidden></div>
+          <div class="pb-played" id="pb-played"></div>
+          <div class="pb-thumb" id="pb-thumb"></div>
+          <input type="range" id="progress-bar" min="0" max="1000" value="0" step="1" aria-label="播放进度">
+        </div>
+        <div class="pb-time">
+          <span id="time-current">--:--:--</span>
+          <span class="pb-time-sep">/</span>
+          <span id="time-total">--:--:--</span>
+        </div>
+        <select id="speed-select" onchange="replayPage.setSpeed(this.value)" title="播放速度">
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+          <option value="8">8x</option>
+          <option value="16">16x</option>
+          <option value="32">32x</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 单玩家时间段导出对话框（JSON / CSV） -->
+  <div class="modal-mask" id="player-export-modal" hidden>
+    <div class="modal">
+      <h3 id="player-export-title">导出玩家时间段</h3>
+      <div class="form-row inline">
+        <label>开始</label>
+        <input type="datetime-local" id="player-export-start" step="1">
+      </div>
+      <div class="form-row inline">
+        <label>结束</label>
+        <input type="datetime-local" id="player-export-end" step="1">
+      </div>
+      <div class="form-row inline">
+        <label>格式</label>
+        <label><input type="radio" name="player-export-format" value="json" checked> JSON</label>
+        <label><input type="radio" name="player-export-format" value="csv"> CSV</label>
+        <span class="hint" id="player-export-hint"></span>
+      </div>
+      <div class="modal-actions">
+        <button id="player-export-cancel">取消</button>
+        <button class="primary" id="player-export-ok">导出</button>
       </div>
     </div>
   </div>

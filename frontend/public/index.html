@@ -100,7 +100,7 @@
       <div class="form-row" style="margin-top: 12px;">
         <button class="small" id="btn-merge" onclick="sessionPage.mergeSelected()" disabled>合并选中会话</button>
         <button class="small" onclick="sessionPage.refresh()">刷新列表</button>
-        <span class="hint">点击行进入回放页面；合并要求各会话时间段不重叠</span>
+        <span class="hint">点击行进入回放页面；合并要求各会话时间段不重叠。「导出」导出整个会话（可选 JSON/CSV），「时间段导出」只导出指定起止时间内的数据</span>
       </div>
       <div class="error-text" id="session-error"></div>
     </div>
@@ -197,6 +197,37 @@
       <div class="error-log" id="error-log"><span class="empty">暂无错误</span></div>
     </div>
 
+  </div>
+
+  <!-- 会话「导出」格式选择菜单 -->
+  <div class="export-menu" id="session-export-menu" hidden>
+    <button data-format="json">导出 JSON</button>
+    <button data-format="csv">导出 CSV</button>
+  </div>
+
+  <!-- 会话时间段导出对话框 -->
+  <div class="modal-mask" id="session-export-modal" hidden>
+    <div class="modal">
+      <h3 id="session-export-title">导出会话时间段</h3>
+      <div class="form-row inline">
+        <label>开始</label>
+        <input type="datetime-local" id="session-export-start" step="1">
+      </div>
+      <div class="form-row inline">
+        <label>结束</label>
+        <input type="datetime-local" id="session-export-end" step="1">
+      </div>
+      <div class="form-row inline">
+        <label>格式</label>
+        <label><input type="radio" name="session-export-format" value="json" checked> JSON</label>
+        <label><input type="radio" name="session-export-format" value="csv"> CSV</label>
+        <span class="hint">按浏览器本地时区；结束时间包含该秒内的数据</span>
+      </div>
+      <div class="modal-actions">
+        <button id="session-export-cancel">取消</button>
+        <button class="primary" id="session-export-ok">导出</button>
+      </div>
+    </div>
   </div>
 
   <script src="/js/api.js"></script>

@@ -36,7 +36,7 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 			auth.POST("/collector/start", startCollector(database, coll))
 			auth.POST("/collector/stop", stopCollector(coll))
 			auth.GET("/collector/live", liveCollector(coll))
-		auth.GET("/collector/preview", previewLive(coll))
+			auth.GET("/collector/preview", previewLive(coll))
 
 			auth.GET("/sessions", listSessions(database))
 			auth.GET("/sessions/:id", getSession(database))
@@ -48,6 +48,8 @@ func NewRouter(database *db.DB, cfg *config.Config, coll *collector.Collector) *
 			auth.GET("/sessions/:id/players", sessionPlayers(database))
 			auth.GET("/sessions/:id/players/:uuid/trajectory", trajectory(database))
 			auth.GET("/sessions/:id/players/:uuid/state", playerState(database))
+			auth.GET("/sessions/:id/players/:uuid/export", exportPlayerPeriod(database))
+			auth.DELETE("/sessions/:id/players/:uuid/points", deletePlayerPoint(database))
 			auth.GET("/sessions/:id/snapshot", snapshot(database))
 			auth.GET("/sessions/:id/export", exportSession(database))
 

@@ -84,6 +84,7 @@ const replayPage = {
   pointTimes: [],           // 所有已加载轨迹点的去重时间戳（步进用）
 
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
+  selectedUuid: null,       // 列表中选中的玩家 uuid（null = 未选中）：进度条高亮其数据覆盖时间段
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
   tipFields: null,          // tooltip 栏目显示开关（名字/坐标/速度/血量/护甲/站点/线路）
@@ -309,16 +310,27 @@ const replayPage = {
 
   bindControls() {
     const bar = document.getElementById('progress-bar');
+    // 进度条取值 0..1000（千分比，比 0..100 拖动更细腻）
     bar.addEventListener('input', () => {
       this.scrubbing = true;
       if (this.t1 > this.t0) {
-        this.currentTime = this.t0 + (Number(bar.value) / 100) * (this.t1 - this.t0);
+        this.currentTime = this.t0 + (Number(bar.value) / 1000) * (this.t1 - this.t0);
         this.render();
       }
     });
     const endScrub = () => { this.scrubbing = false; };
     bar.addEventListener('change', endScrub);
     bar.addEventListener('pointerup', endScrub);
+
+    // 单玩家时间段导出对话框
+    const exportModal = document.getElementById('player-export-modal');
+    if (exportModal) {
+      document.getElementById('player-export-cancel').addEventListener('click', () => this.closePlayerExport());
+      document.getElementById('player-export-ok').addEventListener('click', () => this.submitPlayerExport());
+      exportModal.addEventListener('pointerdown', (e) => {
+        if (e.target === exportModal) this.closePlayerExport(); // 点击遮罩关闭
+      });
+    }
 
     // 键盘快捷键：空格 播放/暂停，左右方向键 步进
     document.addEventListener('keydown', (e) => {
@@ -489,7 +501,9 @@ const replayPage = {
     for (const p of this.players) {
       const label = document.createElement('label');
       label.className = 'player-item';
-      label.title = p.uuid;
+      label.dataset.uuid = p.uuid;
+      // 悬停提示显示玩家名称（而非 UUID）
+      label.title = p.name || p.uuid;
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
@@ -509,48 +523,128 @@ const replayPage = {
       count.className = 'count';
       count.textContent = fmtNum(p.point_count);
 
-      // 轨迹颜色：色板指定 + 「自动」清除指定（恢复自动分配）
-      const colorBox = document.createElement('span');
-      colorBox.className = 'color-box';
-
-      const colorInput = document.createElement('input');
-      colorInput.type = 'color';
-      colorInput.className = 'player-color';
-      colorInput.dataset.uuid = p.uuid;
-      colorInput.value = this.playerColors[p.uuid] || PLAYER_COLORS[0];
-      colorInput.title = '指定该玩家轨迹颜色（默认按加载顺序自动分配）';
-      // 位于 label 内，需阻止事件冒泡，避免点击色板误触发行迹加载复选框
-      colorInput.addEventListener('click', (e) => e.stopPropagation());
-      colorInput.addEventListener('change', () => this.setPlayerColor(p.uuid, colorInput.value));
-
-      const autoBtn = document.createElement('button');
-      autoBtn.type = 'button';
-      autoBtn.className = 'color-auto';
-      autoBtn.textContent = '自动';
-      autoBtn.title = '清除指定颜色，恢复自动分配';
-      autoBtn.style.display = this.playerColors[p.uuid] ? '' : 'none';
-      autoBtn.addEventListener('click', (e) => {
+      // 每行只保留一个「⋯」按钮，颜色 / 跟随 / 选中 / 删除数据点 / 导出时段
+      // 全部收进弹出菜单（见 openPlayerMenu）
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'player-menu-btn';
+      more.dataset.uuid = p.uuid;
+      more.textContent = '⋯';
+      more.title = '更多操作：颜色 / 跟随 / 选中 / 删除当前数据点 / 导出时间段';
+      more.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.clearPlayerColor(p.uuid);
+        this.openPlayerMenu(p.uuid, more);
       });
 
-      colorBox.append(colorInput, autoBtn);
-
-      const followBtn = document.createElement('button');
-      followBtn.type = 'button';
-      followBtn.className = 'follow-btn';
-      followBtn.dataset.uuid = p.uuid;
-      followBtn.textContent = '跟随';
-      followBtn.title = '画面中心跟随该玩家移动（拖动地图可取消）';
-      followBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.toggleFollow(p.uuid);
-      });
-
-      label.append(cb, img, name, count, colorBox, followBtn);
+      label.append(cb, img, name, count, more);
       box.appendChild(label);
+    }
+    this.updateFollowButtons();
+    this.updateSelectionUI();
+  },
+
+  /* ---------- 玩家行操作菜单 ---------- */
+
+  /** 打开玩家操作菜单（挂到 body，避免被玩家列表的滚动容器裁剪） */
+  openPlayerMenu(uuid, anchor) {
+    this.closePlayerMenu();
+    const p = this.players.find((x) => x.uuid === uuid);
+    const track = this.tracks.get(uuid);
+
+    const menu = document.createElement('div');
+    menu.className = 'player-menu';
+    menu.id = 'player-menu';
+    menu.dataset.uuid = uuid;
+
+    // 颜色：色板 + 「自动」恢复按加载顺序分配
+    const colorRow = document.createElement('div');
+    colorRow.className = 'menu-row';
+    const colorLabel = document.createElement('span');
+    colorLabel.textContent = '颜色';
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.className = 'player-color';
+    colorInput.dataset.uuid = uuid;
+    colorInput.value = (track && track.color) || this.playerColors[uuid] || PLAYER_COLORS[0];
+    colorInput.title = '指定该玩家轨迹颜色（默认按加载顺序自动分配）';
+    colorInput.addEventListener('change', () => this.setPlayerColor(uuid, colorInput.value));
+    const autoBtn = document.createElement('button');
+    autoBtn.type = 'button';
+    autoBtn.className = 'color-auto';
+    autoBtn.textContent = '自动';
+    autoBtn.title = '清除指定颜色，恢复自动分配';
+    autoBtn.style.display = this.playerColors[uuid] ? '' : 'none';
+    autoBtn.addEventListener('click', () => this.clearPlayerColor(uuid));
+    colorRow.append(colorLabel, colorInput, autoBtn);
+
+    const followBtn = document.createElement('button');
+    followBtn.type = 'button';
+    followBtn.className = 'menu-item follow-btn';
+    followBtn.dataset.uuid = uuid;
+    const following = this.followUuid === uuid;
+    followBtn.textContent = following ? '取消跟随' : '跟随';
+    followBtn.classList.toggle('active', following);
+    followBtn.addEventListener('click', () => this.toggleFollow(uuid));
+
+    const selectBtn = document.createElement('button');
+    selectBtn.type = 'button';
+    selectBtn.className = 'menu-item select-btn';
+    selectBtn.dataset.uuid = uuid;
+    const selected = this.selectedUuid === uuid;
+    selectBtn.textContent = selected ? '取消选中' : '选中';
+    selectBtn.classList.toggle('active', selected);
+    selectBtn.title = '选中后在进度条上高亮该玩家数据覆盖的时间段';
+    selectBtn.addEventListener('click', () => this.setSelected(uuid));
+
+    const exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'menu-item';
+    exportBtn.textContent = '导出时间段…';
+    exportBtn.title = '选择起止时间，导出该玩家的 JSON / CSV';
+    exportBtn.addEventListener('click', () => this.openPlayerExport(uuid));
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'menu-item danger';
+    delBtn.textContent = '删除当前数据点';
+    delBtn.title = '删除该玩家在当前回放时刻所处的数据点（不可恢复）';
+    delBtn.addEventListener('click', () => this.deleteCurrentPoint(uuid));
+
+    menu.append(colorRow, followBtn, selectBtn, exportBtn, delBtn);
+    document.body.appendChild(menu);
+
+    // 定位：优先在按钮右侧（地图方向）展开，避免遮挡玩家列表；右侧空间不足
+    // 时回退到左侧；垂直与按钮顶部对齐，超出视口则上移
+    const r = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth || 200;
+    const mh = menu.offsetHeight || 180;
+    let left = r.right + 6;
+    if (left + mw > window.innerWidth - 8) left = Math.max(8, r.left - mw - 6);
+    let top = r.top;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, window.innerHeight - mh - 8);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+
+    // 点击菜单外或按 Esc 关闭（延迟注册，避免同一次点击立刻把它关掉）
+    this._menuOutside = (ev) => {
+      if (!menu.contains(ev.target)) this.closePlayerMenu();
+    };
+    setTimeout(() => document.addEventListener('pointerdown', this._menuOutside, true), 0);
+    this._menuEsc = (ev) => { if (ev.key === 'Escape') this.closePlayerMenu(); };
+    document.addEventListener('keydown', this._menuEsc);
+  },
+
+  closePlayerMenu() {
+    const menu = document.getElementById('player-menu');
+    if (menu) menu.remove();
+    if (this._menuOutside) {
+      document.removeEventListener('pointerdown', this._menuOutside, true);
+      this._menuOutside = null;
+    }
+    if (this._menuEsc) {
+      document.removeEventListener('keydown', this._menuEsc);
+      this._menuEsc = null;
     }
   },
 
@@ -579,6 +673,26 @@ const replayPage = {
   /* ---------- 画面跟随 ---------- */
 
   /**
+   * 确保玩家轨迹已加载：未勾选则勾选并加载。
+   * 供「跟随」「选中」共用（两者都需要轨迹才能定位/取色）。
+   * 返回是否已就绪。
+   */
+  async ensureTrack(uuid) {
+    if (this.tracks.has(uuid)) return true;
+    if (this.loadingTracks.has(uuid)) return false;
+    const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
+    if (cb && !cb.checked) cb.checked = true;
+    try {
+      await this.loadTrack(uuid);
+    } catch (e) {
+      this.setLoadStatus('加载轨迹失败: ' + e.message);
+      if (cb) cb.checked = false;
+      return false;
+    }
+    return this.tracks.has(uuid);
+  },
+
+  /**
    * 切换画面跟随目标。
    * 再次点击同一玩家 = 取消跟随；点击其他玩家 = 切换跟随目标。
    * 目标轨迹尚未加载时自动勾选并加载，加载完成后才生效。
@@ -589,13 +703,9 @@ const replayPage = {
       return;
     }
     if (!this.tracks.has(uuid)) {
-      const cb = document.querySelector(`#player-list input[data-uuid="${uuid}"]`);
-      if (cb && !cb.checked) {
-        cb.checked = true;
-        await this.loadTrack(uuid);
-      }
-      if (!this.tracks.has(uuid)) return;      // 加载失败或被用户取消勾选
-      if (this.followUuid) return;             // 加载期间用户已切换到其他玩家
+      const ok = await this.ensureTrack(uuid);
+      if (!ok) return;                          // 加载失败或被用户取消勾选
+      if (this.followUuid) return;               // 加载期间用户已切换到其他玩家
     }
     this.setFollow(uuid);
   },
@@ -607,12 +717,165 @@ const replayPage = {
     if (uuid) this.render();
   },
 
-  /** 同步所有跟随按钮的高亮状态 */
+  /** 同步所有跟随按钮的高亮与文案（按钮仅在玩家操作菜单中出现） */
   updateFollowButtons() {
-    const btns = document.querySelectorAll('#player-list .follow-btn');
+    const btns = document.querySelectorAll('#player-list .follow-btn, #player-menu .follow-btn');
     for (const btn of btns) {
-      btn.classList.toggle('active', btn.dataset.uuid === this.followUuid);
+      const on = btn.dataset.uuid === this.followUuid;
+      btn.classList.toggle('active', on);
+      if (btn.classList.contains('menu-item')) btn.textContent = on ? '取消跟随' : '跟随';
     }
+  },
+
+  /* ---------- 选中玩家（进度条时间段高亮） ---------- */
+
+  /**
+   * 切换选中玩家。再次点击同一玩家 = 取消选中。
+   * 选中需要该玩家已加载轨迹（用于取颜色与数据起止时间），未加载则先加载；
+   * _selecting 防止加载期间重复点击造成并发加载。
+   */
+  async setSelected(uuid) {
+    if (this._selecting) return;
+    if (this.selectedUuid === uuid) {
+      this.selectedUuid = null;
+      this.updateSelectionUI();
+      this.renderTimeline();
+      this.closePlayerMenu();
+      return;
+    }
+    this.closePlayerMenu();
+    this._selecting = true;
+    try {
+      if (!this.tracks.has(uuid) && !(await this.ensureTrack(uuid))) {
+        this.setLoadStatus('选中失败：该玩家轨迹未能加载');
+        return;
+      }
+      this.selectedUuid = uuid;
+      this.updateSelectionUI();
+      this.renderTimeline();
+    } finally {
+      this._selecting = false;
+    }
+  },
+
+  /** 同步玩家行的选中态与选中按钮文案（选中/取消选中） */
+  updateSelectionUI() {
+    document.querySelectorAll('#player-list .player-item').forEach((el) => {
+      el.classList.toggle('selected', el.dataset.uuid === this.selectedUuid);
+    });
+    document.querySelectorAll('#player-menu .select-btn').forEach((btn) => {
+      const on = btn.dataset.uuid === this.selectedUuid;
+      btn.classList.toggle('active', on);
+      btn.textContent = on ? '取消选中' : '选中';
+    });
+  },
+
+  /* ---------- 删除当前数据点 ---------- */
+
+  /**
+   * 删除该玩家在当前回放时刻所处的数据点（需已加载轨迹）。
+   * 「当前点」= 当前时刻之前最后一个数据点；早于首点时即首点、晚于末点时即末点。
+   * 后端按采集时间删除（毫秒窗口，兼容前端时间精度截断），成功后本地同步移除
+   * 原始点并重建轨迹（保持颜色与跟随/选中状态），无需重新拉取整条轨迹。
+   */
+  async deleteCurrentPoint(uuid) {
+    const track = this.tracks.get(uuid);
+    if (!track || !track.rawPoints || !track.rawPoints.length) {
+      this.setLoadStatus('请先勾选加载该玩家轨迹，再删除数据点');
+      return;
+    }
+    const n = track.times.length;
+    const loc = this.locate(track, this.currentTime);
+    const idx = loc.after ? n - 1 : loc.i;
+    const t = track.times[idx];
+    const bx = Math.round(track.xs[idx]);
+    const bz = Math.round(track.zs[idx]);
+    if (!confirm('删除 ' + track.name + ' 在 ' + fmtTime(new Date(t)) + ' 的数据点？\n' +
+      '坐标: ' + bx + ', ' + bz + '（第 ' + (idx + 1) + '/' + n + ' 点）\n\n此操作不可恢复。')) {
+      return;
+    }
+    this.closePlayerMenu();
+    try {
+      await api('/sessions/' + this.sessionId + '/players/' + encodeURIComponent(uuid) +
+        '/points?time=' + encodeURIComponent(new Date(t).toISOString()), { method: 'DELETE' });
+    } catch (e) {
+      this.setLoadStatus('删除失败: ' + e.message);
+      return;
+    }
+
+    // 本地同步：从原始点缓存移除该点后重建轨迹
+    track.rawPoints.splice(idx, 1);
+    const remain = track.rawPoints.length;
+    const p = this.players.find((x) => x.uuid === uuid);
+    if (p) p.point_count = remain;
+    const countEl = document.querySelector('#player-list .player-item[data-uuid="' + uuid + '"] .count');
+    if (countEl) countEl.textContent = fmtNum(remain);
+
+    if (remain === 0) {
+      const cb = document.querySelector('#player-list input[data-uuid="' + uuid + '"]');
+      if (cb) cb.checked = false;
+      this.removeTrack(uuid);
+      this.setLoadStatus('已删除最后一个数据点，该玩家已从地图移除');
+    } else {
+      this.rebuildTrack(uuid);
+      this.setLoadStatus('已删除 1 个数据点，' + track.name + ' 剩余 ' + fmtNum(remain) + ' 点');
+    }
+  },
+
+  /* ---------- 单玩家时间段导出 ---------- */
+
+  /** 打开时间段导出对话框，默认填入该玩家轨迹的首末数据点时间 */
+  openPlayerExport(uuid) {
+    const track = this.tracks.get(uuid);
+    const p = this.players.find((x) => x.uuid === uuid);
+    this._exportUuid = uuid;
+
+    document.getElementById('player-export-title').textContent =
+      '导出 ' + (p ? (p.name || uuid.slice(0, 8)) : uuid) + ' 的时间段';
+    let a = this.t0;
+    let b = this.t1;
+    if (track && track.times.length) {
+      a = track.times[0];
+      b = track.times[track.times.length - 1];
+    }
+    document.getElementById('player-export-start').value = toDatetimeLocal(a);
+    document.getElementById('player-export-end').value = toDatetimeLocal(b);
+    document.getElementById('player-export-hint').textContent =
+      '按浏览器本地时区；结束时间包含该秒内的数据点';
+    document.getElementById('player-export-modal').hidden = false;
+    this.closePlayerMenu();
+  },
+
+  closePlayerExport() {
+    const m = document.getElementById('player-export-modal');
+    if (m) m.hidden = true;
+    this._exportUuid = null;
+  },
+
+  /** 提交导出：起止时间转 UTC 后交给导出 API（JSON / CSV） */
+  submitPlayerExport() {
+    const uuid = this._exportUuid;
+    if (!uuid) return;
+    const sEl = document.getElementById('player-export-start');
+    const eEl = document.getElementById('player-export-end');
+    const st = new Date(sEl.value).getTime();
+    let et = new Date(eEl.value).getTime();
+    if (!sEl.value || !eEl.value || !isFinite(st) || !isFinite(et)) {
+      alert('请填写有效的开始与结束时间');
+      return;
+    }
+    if (et < st) {
+      alert('结束时间不能早于开始时间');
+      return;
+    }
+    et += 999; // datetime-local 精确到秒：让所选结束时刻包含该秒内的数据点
+    const fmt = document.querySelector('input[name="player-export-format"]:checked').value;
+    const url = '/api/sessions/' + this.sessionId + '/players/' + encodeURIComponent(uuid) +
+      '/export?format=' + fmt +
+      '&start=' + encodeURIComponent(new Date(st).toISOString()) +
+      '&end=' + encodeURIComponent(new Date(et).toISOString());
+    this.closePlayerExport();
+    location.href = url; // 响应为附件，触发浏览器下载
   },
 
   /* ---------- 玩家名 tooltip ---------- */
@@ -1052,9 +1315,9 @@ const replayPage = {
     this.syncColorInputs();
   },
 
-  /** 把玩家列表的颜色输入框同步为当前生效色（未加载且无指定时显示 palette 首色） */
+  /** 把颜色输入框同步为当前生效色（玩家菜单中的色板） */
   syncColorInputs() {
-    document.querySelectorAll('#player-list input.player-color').forEach((inp) => {
+    document.querySelectorAll('.player-color').forEach((inp) => {
       const uuid = inp.dataset.uuid;
       const track = this.tracks.get(uuid);
       inp.value = (track && track.color) || this.playerColors[uuid] || PLAYER_COLORS[0];
@@ -1267,6 +1530,11 @@ const replayPage = {
     this.tracks.delete(uuid);
     // 被跟随的玩家轨迹被移除时取消跟随
     if (this.followUuid === uuid) this.setFollow(null);
+    // 被选中的玩家轨迹被移除时清除选中（进度条不再高亮）
+    if (this.selectedUuid === uuid) {
+      this.selectedUuid = null;
+      this.updateSelectionUI();
+    }
     this.recomputeRange();
     this.render();
   },
@@ -1536,15 +1804,52 @@ const replayPage = {
     if (curEl) curEl.textContent = fmtClock(t);
     if (totalEl) totalEl.textContent = fmtDuration(Math.round((this.t1 - this.t0) / 1000));
 
-    // 进度条（用户拖动时不回写，避免抖动）
-    const bar = document.getElementById('progress-bar');
-    if (bar && !this.scrubbing) {
-      bar.value = (this.t1 > this.t0) ? Math.round(((t - this.t0) / (this.t1 - this.t0)) * 100) : 0;
-    }
+    // 进度条（用户拖动时不回写，避免抖动）；同时刷新选中玩家时间段高亮
+    this.renderTimeline();
 
     // 右上角时间戳（#map-container 后代元素，录制时合成进视频）
     const tsEl = document.getElementById('timestamp');
     if (tsEl) tsEl.textContent = fmtTime(t);
+  },
+
+  /**
+   * 更新地图下方播放控制条的进度显示：
+   *   已播放填充 / 拖动手柄 / 选中玩家的数据覆盖时间段高亮。
+   * 轨道为自绘（原生 range 透明覆盖负责交互），高亮区间取选中轨迹的
+   * 首末数据点时间与当前时间轴 [t0, t1] 的交集，颜色用该玩家轨迹色。
+   */
+  renderTimeline() {
+    const span = this.t1 - this.t0;
+    const ratio = span > 0
+      ? Math.min(1, Math.max(0, (this.currentTime - this.t0) / span)) : 0;
+    const pct = (ratio * 100).toFixed(3) + '%';
+
+    const played = document.getElementById('pb-played');
+    const thumb = document.getElementById('pb-thumb');
+    if (played) played.style.width = pct;
+    if (thumb) thumb.style.left = pct;
+
+    const bar = document.getElementById('progress-bar');
+    if (bar && !this.scrubbing) bar.value = Math.round(ratio * 1000);
+
+    const sel = document.getElementById('pb-selected');
+    if (!sel) return;
+    const track = this.selectedUuid ? this.tracks.get(this.selectedUuid) : null;
+    if (!track || !track.times.length || span <= 0) {
+      sel.hidden = true;
+      return;
+    }
+    const a = Math.max(this.t0, track.times[0]);
+    const b = Math.min(this.t1, track.times[track.times.length - 1]);
+    if (b < a) {
+      sel.hidden = true;
+      return;
+    }
+    sel.hidden = false;
+    sel.style.left = (((a - this.t0) / span) * 100).toFixed(3) + '%';
+    // 极短区间也保留最小可见宽度（否则高亮会消失）
+    sel.style.width = Math.max(0.2, ((b - a) / span) * 100).toFixed(3) + '%';
+    sel.style.background = track.color;
   },
 
   /**

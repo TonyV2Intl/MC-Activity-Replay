@@ -61,8 +61,15 @@ function fmtTime(t) {
          pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
 }
 
-/** 时长格式化：秒 → "1:23:45" 或 "45s" */
-function fmtDuration(sec) {
+/** ms epoch → datetime-local 输入框值（YYYY-MM-DDTHH:mm:ss，本地时区） */
+function toDatetimeLocal(ms) {
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+    'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+/** 时长格式化：秒 → "1:23:45" 或 "45s" */function fmtDuration(sec) {
   if (sec == null || isNaN(sec)) return '-';
   sec = Math.floor(sec);
   if (sec < 60) return sec + 's';

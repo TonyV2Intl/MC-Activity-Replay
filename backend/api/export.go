@@ -28,7 +28,65 @@ import (
 
 const exportBatchSize = 2000
 
-// exportSession 导出单个会话为 JSON 或 CSV
+// periodFilter 导出过滤条件：零值表示不限（玩家 / 起止时间）
+type periodFilter struct {
+	UUID  *string
+	Start *time.Time
+	End   *time.Time
+}
+
+func (f periodFilter) limited() bool { return f.Start != nil || f.End != nil }
+
+// parseTimeParam 解析 RFC3339 时间查询参数（可带小数秒，如 2026-10-27T10:00:00.123Z）。
+// 空字符串返回 nil（不限）。
+func parseTimeParam(c *gin.Context, name string) (*time.Time, error) {
+	v := strings.TrimSpace(c.Query(name))
+	if v == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return nil, fmt.Errorf("%s 时间格式应为 RFC3339（可带小数秒）: %q", name, v)
+	}
+	u := t.UTC()
+	return &u, nil
+}
+
+// parsePeriod 解析 start/end 查询参数并校验区间
+func parsePeriod(c *gin.Context) (periodFilter, error) {
+	var f periodFilter
+	var err error
+	if f.Start, err = parseTimeParam(c, "start"); err != nil {
+		return f, err
+	}
+	if f.End, err = parseTimeParam(c, "end"); err != nil {
+		return f, err
+	}
+	if f.Start != nil && f.End != nil && f.End.Before(*f.Start) {
+		return f, fmt.Errorf("结束时间不能早于开始时间")
+	}
+	return f, nil
+}
+
+// applyPeriodToSession 时间段导出时把会话起止改写为所选区间，
+// 使导出文件（及其导入结果）的时间轴与数据一致。
+func applyPeriodToSession(sess *models.Session, f periodFilter) {
+	if !f.limited() {
+		return
+	}
+	if f.Start != nil {
+		sess.StartedAt = *f.Start
+	}
+	if f.End != nil {
+		sess.StoppedAt = f.End
+	} else {
+		sess.StoppedAt = nil
+	}
+	sess.Name = sess.Name + "（时间段）"
+}
+
+// exportSession 导出单个会话为 JSON 或 CSV。
+// 可选查询参数：start / end（RFC3339，闭区间），用于固定时间段导出。
 func exportSession(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseID(c, "id")
@@ -38,6 +96,12 @@ func exportSession(database *db.DB) gin.HandlerFunc {
 		format := c.DefaultQuery("format", "json")
 		ctx := c.Request.Context()
 
+		f, err := parsePeriod(c)
+		if err != nil {
+			badRequest(c, err.Error())
+			return
+		}
+
 		// 读取会话
 		sess, err := scanSession(database.Pool.QueryRow(ctx,
 			`SELECT `+sessionCols+` FROM sessions WHERE id = $1`, id))
@@ -45,23 +109,84 @@ func exportSession(database *db.DB) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
 			return
 		}
+		applyPeriodToSession(sess, f)
 
+		filename := fmt.Sprintf("session-%d", sess.ID)
+		if f.limited() {
+			filename += "-period"
+		}
 		switch format {
 		case "json":
-			exportSessionJSON(c, database, sess)
+			exportSessionJSON(c, database, sess, f, filename)
 		case "csv":
-			exportSessionCSV(c, database, sess)
+			exportSessionCSV(c, database, sess, f, filename)
 		default:
 			badRequest(c, "不支持的导出格式（支持 json / csv）")
 		}
 	}
 }
 
-// exportSessionJSON 流式导出 JSON，避免大会话占用过多内存
-func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
+// exportPlayerPeriod 导出单个玩家的固定时间段数据（JSON/CSV），
+// 便于把某个玩家的某段轨迹单独归档或分享。玩家不存在时 404。
+func exportPlayerPeriod(database *db.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := parseID(c, "id")
+		if !ok {
+			return
+		}
+		uuid := c.Param("uuid")
+		format := c.DefaultQuery("format", "json")
+		ctx := c.Request.Context()
+
+		f, err := parsePeriod(c)
+		if err != nil {
+			badRequest(c, err.Error())
+			return
+		}
+		f.UUID = &uuid
+
+		sess, err := scanSession(database.Pool.QueryRow(ctx,
+			`SELECT `+sessionCols+` FROM sessions WHERE id = $1`, id))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
+			return
+		}
+
+		// 该玩家在（可选）时间范围内是否存在数据点
+		var exists bool
+		if err := database.Pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM player_activity
+			   WHERE session_id = $1 AND player_uuid = $2
+			     AND ($3::timestamptz IS NULL OR time >= $3)
+			     AND ($4::timestamptz IS NULL OR time <= $4))`,
+			id, uuid, f.Start, f.End).Scan(&exists); err != nil {
+			serverError(c, err)
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "该玩家在所选时间段内没有数据"})
+			return
+		}
+
+		applyPeriodToSession(sess, f)
+		filename := fmt.Sprintf("session-%d-%s", sess.ID, uuid[:min(8, len(uuid))])
+		switch format {
+		case "json":
+			exportSessionJSON(c, database, sess, f, filename)
+		case "csv":
+			exportSessionCSV(c, database, sess, f, filename)
+		default:
+			badRequest(c, "不支持的导出格式（支持 json / csv）")
+		}
+	}
+}
+
+// exportSessionJSON 流式导出 JSON，避免大会话占用过多内存。
+// f.UUID 非空时只导出该玩家；f.Start/f.End 用于限定时间段。
+func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session, f periodFilter, filename string) {
 	ctx := c.Request.Context()
 	c.Header("Content-Type", "application/json; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="session-%d.json"`, sess.ID))
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.json"`, filename))
 
 	w := bufio.NewWriter(c.Writer)
 	defer w.Flush()
@@ -74,7 +199,9 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 	// 玩家列表
 	pRows, err := database.Pool.Query(ctx,
 		`SELECT player_uuid, (array_agg(player_name ORDER BY time))[1] AS name
-		 FROM player_activity WHERE session_id = $1 GROUP BY player_uuid ORDER BY name`, sess.ID)
+		 FROM player_activity WHERE session_id = $1
+		   AND ($2::text IS NULL OR player_uuid = $2)
+		 GROUP BY player_uuid ORDER BY name`, sess.ID, f.UUID)
 	if err != nil {
 		return
 	}
@@ -108,8 +235,11 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 		for {
 			aRows, err := database.Pool.Query(ctx,
 				`SELECT time, x, z, yaw FROM player_activity
-				 WHERE session_id = $1 AND player_uuid = $2 ORDER BY time ASC OFFSET $3 LIMIT $4`,
-				sess.ID, p.uuid, offset, exportBatchSize)
+				 WHERE session_id = $1 AND player_uuid = $2
+				   AND ($5::timestamptz IS NULL OR time >= $5)
+				   AND ($6::timestamptz IS NULL OR time <= $6)
+				 ORDER BY time ASC OFFSET $3 LIMIT $4`,
+				sess.ID, p.uuid, offset, exportBatchSize, f.Start, f.End)
 			if err != nil {
 				return
 			}
@@ -136,16 +266,35 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 		}
 		w.WriteString(`]`)
 
-		// state（player_state：MTR 乘坐状态 + 生命值/护甲）
+		// state（player_state：MTR 乘坐状态 + 生命值/护甲）。
+		// 时间段导出时先补一条区间起点之前最近的状态记录，保证导入后
+		// 该段起始时刻的 tooltip 仍有站点/线路（采集器按“变化才记录”，
+		// 起点可能在两条状态之间）。
 		w.WriteString(`,"state":[`)
+		firstState := true
+		if f.Start != nil {
+			var r models.StateRecord
+			err := database.Pool.QueryRow(ctx,
+				`SELECT time, station_id, route_id, route_station_id1, route_station_id2, health, armor
+				 FROM player_state WHERE session_id = $1 AND player_uuid = $2 AND time < $3
+				 ORDER BY time DESC LIMIT 1`, sess.ID, p.uuid, *f.Start).
+				Scan(&r.Time, &r.StationID, &r.RouteID, &r.RouteStationID1, &r.RouteStationID2, &r.Health, &r.Armor)
+			if err == nil {
+				rJSON, _ := json.Marshal(r)
+				w.Write(rJSON)
+				firstState = false
+			}
+		}
 		sRows, err := database.Pool.Query(ctx,
 			`SELECT time, station_id, route_id, route_station_id1, route_station_id2, health, armor
-			 FROM player_state WHERE session_id = $1 AND player_uuid = $2 ORDER BY time ASC`,
-			sess.ID, p.uuid)
+			 FROM player_state WHERE session_id = $1 AND player_uuid = $2
+			   AND ($3::timestamptz IS NULL OR time >= $3)
+			   AND ($4::timestamptz IS NULL OR time <= $4)
+			 ORDER BY time ASC`,
+			sess.ID, p.uuid, f.Start, f.End)
 		if err != nil {
 			return
 		}
-		firstState := true
 		for sRows.Next() {
 			var r models.StateRecord
 			if err := sRows.Scan(&r.Time, &r.StationID, &r.RouteID, &r.RouteStationID1, &r.RouteStationID2, &r.Health, &r.Armor); err != nil {
@@ -166,10 +315,10 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session) {
 }
 
 // exportSessionCSV 导出宽表 CSV：每行一个数据点
-func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
+func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session, f periodFilter, filename string) {
 	ctx := c.Request.Context()
 	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="session-%d.csv"`, sess.ID))
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.csv"`, filename))
 
 	w := csv.NewWriter(c.Writer)
 	defer w.Flush()
@@ -187,7 +336,10 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session) {
 		     ORDER BY t.time DESC LIMIT 1
 		 ) t ON true
 		 WHERE a.session_id = $1
-		 ORDER BY a.time`, sess.ID)
+		   AND ($2::text IS NULL OR a.player_uuid = $2)
+		   AND ($3::timestamptz IS NULL OR a.time >= $3)
+		   AND ($4::timestamptz IS NULL OR a.time <= $4)
+		 ORDER BY a.time`, sess.ID, f.UUID, f.Start, f.End)
 	if err != nil {
 		return
 	}
