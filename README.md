@@ -175,7 +175,7 @@ mc-activity-replay/
 | GET | `/api/sessions/:id/players/:uuid/export?format=json\|csv&start=&end=` | 单玩家时间段导出（`start/end` 为 RFC3339 闭区间，缺省为全时段） |
 | DELETE | `/api/sessions/:id/players/:uuid/points?time=` | 删除单个数据点（`time` 为 RFC3339；同刻状态记录一并删除） |
 | GET | `/api/sessions/:id/snapshot?at=` | 指定时间点在线玩家快照 |
-| GET | `/api/sessions/:id/export?format=json\|csv&start=&end=` | 会话导出（JSON 流式 / CSV 坐标流式；可选时间段过滤） |
+| GET | `/api/sessions/:id/export?format=json\|csv&start=&end=` | 会话导出（JSON 流式 / CSV 流式；两者内容等效，CSV 自带会话元数据与状态记录；可选时间段过滤） |
 | GET | `/api/config` / PUT | 系统配置读写 |
 | GET | `/api/network/names` | MTR 站点/线路 ID → 名称映射（回放工具提示用，后端缓存 10 分钟） |
 | GET | `/api/tiles/{world}/{zoom}/{x}_{z}.png` | 瓦片代理：浏览器经后端中转下载 Squaremap 瓦片（上游取 `mirror_url`，回退 `squaremap_url`；FIFO 缓存 + 浏览器缓存头） |
@@ -249,7 +249,7 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 5. **录制视频**：点击“进入录制模式”——侧边栏控件全部保留、Leaflet 缩放按钮隐藏、地图区按 16:9（可切 4:3）比例居中，右上角时间戳作为地图容器后代元素始终在录制范围内。点击「获取录制区域」并在浏览器弹窗中选择**当前标签页**：Edge/Chrome 132+ 自动把采集裁剪到地图区域，其他浏览器（或裁剪失败）降级为录制整个标签页（需后期手动裁剪）；若选择「整个屏幕/整个窗口」则录制整个源（按规格无法裁剪到地图区域，需后期手动裁剪）。获取后会做一次采集源探活：无画面输出时会自动重取一次，仍无画面则拒绝就绪并提示更换录制源或浏览器；区域就绪后无时间限制。点击「开始录制」即开始录屏（回放不暂停、可继续操作地图），「停止录制」后自动下载 `replay-{会话ID}-{时间戳}.mp4`（H.264 编码；浏览器不支持 MP4/H.264 时开始录制会提示无法录制），可再次录制无需重新获取；按 Esc 或再次点击「退出录制模式」退出（录制中会先停止并下载）。
 6. **数据库备份**：控制台“数据库”区域点击“导出数据库”下载全库数据快照；点击“导入数据库”选择快照文件恢复。
 7. **一键清空数据库**：控制台“数据库导入导出”区域点击「一键清空数据库」（双重确认）——TRUNCATE 全部表并恢复默认系统配置与初始管理员密码，相当于全新安装，用于彻底重置、避免旧配置项冲突；**不可恢复**，录制中会拒绝执行。
-8. **导入单次会话**：控制台“数据库导入导出”区域点击“导入单次会话（JSON/CSV）”，选择文件后追加导入一次会话（不清空现有数据）。JSON 为「导出会话 JSON」的结构（version=1，含完整玩家轨迹与状态记录 `state`：MTR 乘坐字段 + 血量/护甲）；CSV 为「导出会话 CSV」的宽表格式（`time,player_uuid,player_name,x,z,yaw,station_id,route_id`），后端按玩家分组还原轨迹，连续相同的 (station_id, route_id) 按状态变化去重为状态记录，会话元数据由数据推导（名称取文件名、起止时间取首末点、轮询间隔取相邻点间隔中位数，URL/世界/瓦片取当前配置或系统默认值）。
+8. **导入单次会话**：控制台“数据库导入导出”区域点击“导入单次会话（JSON/CSV）”，选择文件后追加导入一次会话（不清空现有数据）。JSON 为「导出会话 JSON」的结构（version=1）；CSV 为「导出会话 CSV」的产物（表头前 `#mc-activity-replay.*` 注释行携带完整会话元数据，`record_type` 区分 activity 位置行与 state 状态行），**导入结果与 JSON 完全等效**；同时兼容旧版 8 列宽表 CSV（无元数据，按状态变化从位置行重建状态记录）。
 
 ## 瓦片来源：镜像地址与服务器代理
 
@@ -294,30 +294,48 @@ latLng(x, z)    = L.latLng(-(z + offsetZ) * s, (x + offsetX) * s)
 `POST /api/sessions/import` 以 `multipart/form-data`（字段名 `file`）上传**一次会话**的数据，追加导入、不清空现有数据。按扩展名/Content-Type 分流：
 
 - **JSON**（`GET /api/sessions/:id/export` 的产物，`version=1`）：完整还原会话元数据、全部玩家轨迹点与状态变化（MTR 乘坐字段含 `routeStationId1/2` 起终点 + 血量/护甲）。
-- **CSV**（`GET /api/sessions/:id/export?format=csv` 的产物，宽表 `time,player_uuid,player_name,x,z,yaw,station_id,route_id`）：每行一个数据点，`time` 为 RFC3339（可带小数秒，亚秒精度保证同一秒内多点与状态变化的顺序，导入往返无损），`station_id/route_id` 为该时刻最新乘坐状态（由导出端 LATERAL 关联生成，空表示未乘车）。导入时（见 `parseSessionCSV`）：
-  - 按 `player_uuid` 分组还原每玩家轨迹点序列（保持时间排序）；
-  - 连续相同的 `(station_id, route_id)` 按「状态变化才记录」去重为 `player_state` 行，与采集器语义一致；
-  - 会话元数据推导：名称 `导入_<文件名>`、起止时间取首末点、轮询间隔取相邻点间隔中位数（钳制 50ms–600s），`mtr_url/squaremap_url` 取当前配置，世界名与瓦片 URL 模板取系统默认值；
+- **CSV**（`GET /api/sessions/:id/export?format=csv` 的产物）：**内容与 JSON 导出等效**，见下节格式说明。
 
 导入成功后返回 `{ok, sessionId, name}`，前端刷新会话列表。
 
+### CSV 格式（与 JSON 等效）
+
+CSV 导出结构：
+
+```
+#mc-activity-replay.version=2
+#mc-activity-replay.name=会话名
+#mc-activity-replay.started_at=2026-10-21T09:00:00Z
+#mc-activity-replay.stopped_at=...
+#mc-activity-replay.poll_interval_ms=1000
+#mc-activity-replay.world=minecraft_overworld
+#mc-activity-replay.tile_zoom=3
+#mc-activity-replay.tile_url_template=...
+#mc-activity-replay.mtr_enabled=1
+#mc-activity-replay.collect_station_id=1
+...（共 18 行：会话全部元数据）
+record_type,time,player_uuid,player_name,x,z,yaw,health,armor,station_id,route_id,route_station_id1,route_station_id2
+activity,2026-10-21T09:00:00Z,uuid,名字,100,200,90,20,0,S1,R1,S1,\N
+state,2026-10-21T09:00:05.123Z,uuid,名字,,,,15.5,2,S2,R1,S2,\N
+```
+
+要点：
+
+- **会话元数据写在表头前的 `#mc-activity-replay.<key>=<value>` 注释行**（CSV 无标准元数据段；复制到每行会让体积随点数膨胀）。导入时剥离并还原，不再由数据推导。
+- **`record_type` 区分两类行**：`activity` 是位置点（附该时刻最新状态，便于在表格里直接看）；`state` 是 `player_state` 的原始记录，**保留各自独立的采集时间**。采集器只在位置变化时写 activity、状态变化时写 state，玩家静止时换乘/掉血不会产生位置点——只靠「位置点 + 当时状态」的宽表无法还原这些状态变化的时间。
+- 文本状态列用 `\N` 表示 SQL NULL、空字段表示空字符串（`station_id` 既有「未采集 = NULL」也有「无站点 = ""」，需区分）；数值列空字段即 NULL。
+- `time` 为 RFC3339（可带小数秒），亚秒精度保证同一秒内多点/状态变化的顺序。
+- 导入时按 `record_type` 分别写 `player_activity` 与 `player_state`，**不做状态去重**（state 行本身就是变化记录），结果与 JSON 导入逐字段一致。
+
+### 旧版 CSV 兼容
+
+旧版导出为 8 列宽表（`time,player_uuid,player_name,x,z,yaw,station_id,route_id`，无注释行、无 `record_type`）。导入时自动识别：按玩家分组还原位置点，连续相同的 `(station_id, route_id)` 按「状态变化才记录」去重为状态记录，会话元数据由数据推导（名称 `导入_<文件名>`、起止取首末点、轮询间隔取中位数、URL/世界/瓦片取当前配置）。此路径会丢失 `health/armor` 与 `route_station_id1/2`（原文件本来就没有），属于旧格式的固有限制。
+
 ### JSON 与 CSV 导入是否等效？
 
-**不等效。位置轨迹等效，附加信息不等效——CSV 会缺数据。**
+**现在等效。** 新版 CSV 携带全部会话元数据与独立状态记录，导入后的 `sessions`、`player_activity`、`player_state` 与 JSON 导入逐字段一致（时间、坐标、yaw、health、armor、station/route/route_station_id1/2，以及会话名称/起止/轮询间隔/世界/瓦片配置/上游 URL/采集标志）。
 
-| 内容 | JSON 导入 | CSV 导入 |
-|---|---|---|
-| 轨迹点 `time / x / z / yaw` | 完整 | **完整**（每行一点，亚秒精度，不做采样或去重） |
-| 玩家名 | 完整 | 完整 |
-| 血量 `health` / 护甲 `armor` | 完整 | **丢失**（宽表无这两列，导入后视为未采集） |
-| 线路起终点站 `route_station_id1/2` | 完整 | **丢失**（tooltip 只显示线路名，不显示 `A → B`） |
-| `player_state` 记录条数 | 与原库一致 | 按状态变化去重，可能少于原库（语义等价：相邻重复状态本无信息） |
-| 会话名称 | 原名称 | `导入_<文件名>` |
-| 起止时间 | 原会话值 | 首末数据点时间（无人上线的时间段会被截掉） |
-| 轮询间隔 | 原值 | 相邻点间隔中位数 |
-| 世界名 / 瓦片缩放 / 瓦片模板 / 上游 URL / 采集标志 | 完整 | 当前系统配置或默认值 |
-
-结论：**只要轨迹位置，用 CSV 足够且不会缺点；要完整还原（血量、护甲、线路方向、会话配置与原始时间轴），必须用 JSON。** 需要归档时优先导出 JSON，CSV 更适合给表格软件分析。
+两者只是容器不同：JSON 嵌套结构适合程序处理与归档；CSV 每行一条记录，可直接用 Excel / pandas 打开分析（按 `record_type` 筛选位置或状态）。旧版 8 列 CSV 导入仍会缺 `health/armor` 与线路起终点，但那是文件本身不含这些列。
 
 ## 构建说明
 

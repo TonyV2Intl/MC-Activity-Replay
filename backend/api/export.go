@@ -314,24 +314,91 @@ func exportSessionJSON(c *gin.Context, database *db.DB, sess *models.Session, f 
 	w.WriteString(`]}`)
 }
 
-// exportSessionCSV 导出宽表 CSV：每行一个数据点
+// CSV 会话元数据以注释行写在表头之前：CSV 没有标准元数据段，而把元数据
+// 复制到每一行会让文件体积随数据点数量线性膨胀。读取端按行首前缀识别并剥离。
+const csvMetaPrefix = "#mc-activity-replay."
+
+// csvMetaEsc 把元数据值压成单行（注释行按行切分，值内不能含换行）
+func csvMetaEsc(v string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(v)
+}
+
+func boolFlag(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
+// writeCSVMeta 写会话元数据注释行（读取端 restoreSessionFromCSVMeta）
+func writeCSVMeta(w io.Writer, sess *models.Session) {
+	set := func(k, v string) {
+		fmt.Fprintf(w, "%s%s=%s\n", csvMetaPrefix, k, csvMetaEsc(v))
+	}
+	set("version", "2")
+	set("name", sess.Name)
+	set("started_at", sess.StartedAt.UTC().Format(time.RFC3339Nano))
+	if sess.StoppedAt != nil {
+		set("stopped_at", sess.StoppedAt.UTC().Format(time.RFC3339Nano))
+	}
+	if sess.MaxDurationSec != nil {
+		set("max_duration_sec", strconv.Itoa(*sess.MaxDurationSec))
+	}
+	if sess.StoppedReason != nil {
+		set("stopped_reason", *sess.StoppedReason)
+	}
+	set("poll_interval_ms", strconv.Itoa(sess.PollIntervalMs))
+	set("mtr_url", sess.MtrURL)
+	set("squaremap_url", sess.SquaremapURL)
+	set("world", sess.World)
+	set("tile_zoom", strconv.Itoa(sess.TileZoom))
+	set("tile_url_template", sess.TileURLTemplate)
+	set("mtr_enabled", boolFlag(sess.MtrEnabled))
+	set("collect_station_id", boolFlag(sess.CollectStationID))
+	set("collect_route_id", boolFlag(sess.CollectRouteID))
+	set("collect_route_station1", boolFlag(sess.CollectRouteStation1))
+	set("collect_route_station2", boolFlag(sess.CollectRouteStation2))
+	set("collect_health", boolFlag(sess.CollectHealth))
+	set("collect_armor", boolFlag(sess.CollectArmor))
+}
+
+// csvExportHeader 与 JSON 导出等效的 CSV 列。
+// record_type 区分两类行：activity（位置点）/ state（状态记录）。
+var csvExportHeader = []string{
+	"record_type", "time", "player_uuid", "player_name",
+	"x", "z", "yaw", "health", "armor",
+	"station_id", "route_id", "route_station_id1", "route_station_id2",
+}
+
+// exportSessionCSV 导出 CSV，内容与 JSON 导出等效：
+//   - 表头前用注释行携带完整会话元数据（导入时还原，不再由数据推导）
+//   - record_type=activity 行是位置点，附该时刻最新状态（便于表格里直接查看）
+//   - record_type=state 行是 player_state 原始记录，保留各自独立的采集时间
+//
+// 采集器只在位置变化时写 activity、状态变化时写 state，两者时间彼此独立
+// （玩家静止时换乘/掉血不会产生位置点）。因此「每个位置点 + 当时状态」的宽表
+// 无法还原这些状态变化的时间，必须额外导出独立的 state 行，导入时按行类型分别写表。
 func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session, f periodFilter, filename string) {
 	ctx := c.Request.Context()
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.csv"`, filename))
 
+	writeCSVMeta(c.Writer, sess)
+
 	w := csv.NewWriter(c.Writer)
 	defer w.Flush()
 
-	w.Write([]string{"time", "player_uuid", "player_name", "x", "z", "yaw", "station_id", "route_id"})
+	w.Write(csvExportHeader)
 
 	// 用 LATERAL 关联每个位置点对应的最新玩家状态
 	rows, err := database.Pool.Query(ctx,
 		`SELECT a.time, a.player_uuid, a.player_name, a.x, a.z, a.yaw,
-		        t.station_id, t.route_id
+		        t.health, t.armor, t.station_id, t.route_id,
+		        t.route_station_id1, t.route_station_id2
 		 FROM player_activity a
 		 LEFT JOIN LATERAL (
-		     SELECT station_id, route_id FROM player_state t
+		     SELECT health, armor, station_id, route_id, route_station_id1, route_station_id2
+		     FROM player_state t
 		     WHERE t.session_id = a.session_id AND t.player_uuid = a.player_uuid AND t.time <= a.time
 		     ORDER BY t.time DESC LIMIT 1
 		 ) t ON true
@@ -351,22 +418,127 @@ func exportSessionCSV(c *gin.Context, database *db.DB, sess *models.Session, f p
 			uuid, name string
 			x, z       float64
 			yaw        *float64
+			health     *float64
+			armor      *int
 			stationID  *string
 			routeID    *string
+			rs1, rs2   *string
 		)
-		if err := rows.Scan(&t, &uuid, &name, &x, &z, &yaw, &stationID, &routeID); err != nil {
+		if err := rows.Scan(&t, &uuid, &name, &x, &z, &yaw, &health, &armor,
+			&stationID, &routeID, &rs1, &rs2); err != nil {
 			return
 		}
 		w.Write([]string{
+			"activity",
 			t.UTC().Format(time.RFC3339Nano), // 亚秒精度：同一秒内的多点/状态变化保持顺序，保证导入往返无损
 			uuid,
 			name,
 			strconv.FormatFloat(x, 'f', -1, 64),
 			strconv.FormatFloat(z, 'f', -1, 64),
 			formatFloatPtr(yaw),
-			formatStringPtr(stationID),
-			formatStringPtr(routeID),
+			formatFloatPtr(health),
+			formatIntPtr(armor),
+			formatCSVStringPtr(stationID),
+			formatCSVStringPtr(routeID),
+			formatCSVStringPtr(rs1),
+			formatCSVStringPtr(rs2),
 		})
+	}
+	rows.Close()
+
+	// ---- 状态记录段：保留每条 player_state 的独立采集时间（JSON 的 state 数组）----
+	// player_state 没有 player_name 列，用该玩家位置记录里的名字补上便于阅读
+	nameByUUID := map[string]string{}
+	if pRows, err := database.Pool.Query(ctx,
+		`SELECT player_uuid, (array_agg(player_name ORDER BY time))[1]
+		 FROM player_activity WHERE session_id = $1
+		   AND ($2::text IS NULL OR player_uuid = $2)
+		 GROUP BY player_uuid`, sess.ID, f.UUID); err == nil {
+		for pRows.Next() {
+			var u, n string
+			if pRows.Scan(&u, &n) == nil {
+				nameByUUID[u] = n
+			}
+		}
+		pRows.Close()
+	}
+
+	writeState := func(t time.Time, uuid string, health *float64, armor *int,
+		station, route, rs1, rs2 *string) {
+		w.Write([]string{
+			"state",
+			t.UTC().Format(time.RFC3339Nano),
+			uuid,
+			nameByUUID[uuid],
+			"", "", "", // x / z / yaw：状态记录不含位置
+			formatFloatPtr(health),
+			formatIntPtr(armor),
+			formatCSVStringPtr(station),
+			formatCSVStringPtr(route),
+			formatCSVStringPtr(rs1),
+			formatCSVStringPtr(rs2),
+		})
+	}
+
+	// 时间段导出：先补每个玩家在区间起点之前最近的一条状态，作为该段初始状态
+	// （状态按变化记录，区间起点可能落在两条状态之间；与 JSON 导出一致）
+	if f.Start != nil {
+		preRows, err := database.Pool.Query(ctx,
+			`SELECT DISTINCT ON (player_uuid)
+			        time, player_uuid, health, armor, station_id, route_id,
+			        route_station_id1, route_station_id2
+			 FROM player_state
+			 WHERE session_id = $1 AND time < $2
+			   AND ($3::text IS NULL OR player_uuid = $3)
+			 ORDER BY player_uuid, time DESC`, sess.ID, *f.Start, f.UUID)
+		if err == nil {
+			for preRows.Next() {
+				var (
+					t       time.Time
+					uuid    string
+					health  *float64
+					armor   *int
+					station *string
+					route   *string
+					sRs1    *string
+					sRs2    *string
+				)
+				if preRows.Scan(&t, &uuid, &health, &armor, &station, &route, &sRs1, &sRs2) == nil {
+					writeState(t, uuid, health, armor, station, route, sRs1, sRs2)
+				}
+			}
+			preRows.Close()
+		}
+	}
+
+	sRows, err := database.Pool.Query(ctx,
+		`SELECT time, player_uuid, health, armor, station_id, route_id,
+		        route_station_id1, route_station_id2
+		 FROM player_state
+		 WHERE session_id = $1
+		   AND ($2::text IS NULL OR player_uuid = $2)
+		   AND ($3::timestamptz IS NULL OR time >= $3)
+		   AND ($4::timestamptz IS NULL OR time <= $4)
+		 ORDER BY time`, sess.ID, f.UUID, f.Start, f.End)
+	if err != nil {
+		return
+	}
+	defer sRows.Close()
+	for sRows.Next() {
+		var (
+			t       time.Time
+			uuid    string
+			health  *float64
+			armor   *int
+			station *string
+			route   *string
+			sRs1    *string
+			sRs2    *string
+		)
+		if err := sRows.Scan(&t, &uuid, &health, &armor, &station, &route, &sRs1, &sRs2); err != nil {
+			return
+		}
+		writeState(t, uuid, health, armor, station, route, sRs1, sRs2)
 	}
 }
 
@@ -375,6 +547,25 @@ func formatFloatPtr(v *float64) string {
 		return ""
 	}
 	return strconv.FormatFloat(*v, 'f', -1, 64)
+}
+
+func formatIntPtr(v *int) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.Itoa(*v)
+}
+
+// csvNull 表示 NULL（CSV 空字段无法与空字符串区分，而 player_state 的
+// station_id/route_id 等既有 NULL（未采集）也有 ""（无站点），两者需区分）
+const csvNull = `\N`
+
+// formatCSVStringPtr 文本状态列：NULL → \N，空字符串 → 空字段
+func formatCSVStringPtr(v *string) string {
+	if v == nil {
+		return csvNull
+	}
+	return *v
 }
 
 func formatStringPtr(v *string) string {
@@ -386,8 +577,9 @@ func formatStringPtr(v *string) string {
 
 // importSession 导入会话（JSON 或 CSV 格式，multipart/form-data）。
 // JSON 为控制台「导出会话」产生的结构（version=1）；
-// CSV 为导出会话的宽表格式（time,player_uuid,player_name,x,z,yaw,station_id,route_id），
-// 按文件扩展名/Content-Type 区分，CSV 的会话元数据由数据推导。
+// CSV 为导出会话的产物（表头前注释行携带会话元数据，record_type 区分
+// activity/state 行），导入结果与 JSON 等效；同时兼容旧版 8 列宽表 CSV
+// （无元数据，按状态变化从位置行重建 player_state）。
 func importSession(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		file, header, err := c.Request.FormFile("file")
@@ -480,23 +672,91 @@ func isCSVUpload(header *multipart.FileHeader) bool {
 	return strings.Contains(ct, "csv")
 }
 
-// csvImportRow CSV 宽表的一行
+// csvImportRow CSV 一行。recType 为空表示旧版宽表（无 record_type 列）。
 type csvImportRow struct {
+	recType string // activity | state
 	t       time.Time
 	uuid    string
 	name    string
 	x, z    float64
 	yaw     *float64
-	station string
-	route   string
+	health  *float64
+	armor   *int
+	station *string
+	route   *string
+	rs1     *string
+	rs2     *string
 }
 
-// parseSessionCSV 解析导出的宽表 CSV 为 ExportJSON。
-// 会话元数据由数据推导：名称取文件名、起止时间取首末点、轮询间隔取相邻点间隔中位数，
-// URL/世界/瓦片模板取当前配置或系统默认值。乘坐状态按“状态变化才记录”去重
-// （同一玩家连续相同的 station/route 只保留首条），与采集器语义一致。
+// csvStrVal 取指针字符串值（nil 视为空串，仅用于旧格式的状态去重 key）
+func csvStrVal(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// splitCSVMeta 剥离表头之前的 "#mc-activity-replay.<key>=<value>" 注释行，
+// 返回元数据与剩余 CSV 正文。旧格式文件没有注释行，返回空 map。
+func splitCSVMeta(body []byte) (map[string]string, []byte) {
+	meta := map[string]string{}
+	lines := strings.Split(string(body), "\n")
+	rest := make([]string, 0, len(lines))
+	headerSeen := false
+	for _, ln := range lines {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(ln, "\ufeff"))
+		if !headerSeen {
+			if strings.HasPrefix(trimmed, "#") {
+				if strings.HasPrefix(trimmed, csvMetaPrefix) {
+					kv := strings.SplitN(strings.TrimPrefix(trimmed, csvMetaPrefix), "=", 2)
+					if len(kv) == 2 {
+						meta[strings.TrimSpace(kv[0])] = kv[1]
+					}
+				}
+				continue
+			}
+			if trimmed == "" {
+				continue // 注释与表头之间的空行
+			}
+			headerSeen = true
+		}
+		rest = append(rest, ln)
+	}
+	return meta, []byte(strings.Join(rest, "\n"))
+}
+
+func parseCSVFloatPtr(v string) *float64 {
+	if v == "" {
+		return nil
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return &f
+	}
+	return nil
+}
+
+func parseCSVIntPtr(v string) *int {
+	if v == "" {
+		return nil
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return &n
+	}
+	return nil
+}
+
+// parseSessionCSV 解析 CSV 为 ExportJSON。
+//
+// 支持两种格式：
+//   - 新版（导出的 CSV 自带 `record_type` 列）：表头前注释行还原完整会话元数据；
+//     activity 行写位置点、state 行写独立状态记录（精确保留时间，不去重），
+//     与 JSON 导入等效。
+//   - 旧版宽表（8 列，无 record_type）：元数据由数据推导，乘坐状态按
+//     「状态变化才记录」从位置行去重重建。
 func parseSessionCSV(body []byte, filename string, database *db.DB) (models.ExportJSON, error) {
-	reader := csv.NewReader(bytes.NewReader(body))
+	meta, data := splitCSVMeta(body)
+
+	reader := csv.NewReader(bytes.NewReader(data))
 	reader.FieldsPerRecord = -1 // 容忍末尾缺列
 	reader.TrimLeadingSpace = true
 	records, err := reader.ReadAll()
@@ -507,52 +767,93 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 		return models.ExportJSON{}, fmt.Errorf("CSV 为空")
 	}
 
-	// 头部：固定 8 列 time,player_uuid,player_name,x,z,yaw,station_id,route_id
+	// 表头按列名定位（新旧格式列数不同，避免写死下标）
 	header := records[0]
-	for i := range header {
-		header[i] = strings.TrimSpace(strings.TrimPrefix(header[i], "\ufeff"))
+	col := make(map[string]int, len(header))
+	for i, h := range header {
+		col[strings.ToLower(strings.TrimSpace(strings.TrimPrefix(h, "\ufeff")))] = i
 	}
-	if len(header) != 8 || strings.ToLower(header[0]) != "time" {
-		return models.ExportJSON{}, fmt.Errorf("CSV 表头应为 time,player_uuid,player_name,x,z,yaw,station_id,route_id")
+	if _, ok := col["time"]; !ok {
+		return models.ExportJSON{}, fmt.Errorf("CSV 表头缺少 time 列（应为导出生成的 CSV）")
+	}
+	if _, ok := col["player_uuid"]; !ok {
+		return models.ExportJSON{}, fmt.Errorf("CSV 表头缺少 player_uuid 列")
+	}
+	_, typed := col["record_type"]
+
+	get := func(rec []string, name string) string {
+		i, ok := col[name]
+		if !ok || i >= len(rec) {
+			return ""
+		}
+		return strings.TrimSpace(rec[i])
 	}
 
 	var rows []csvImportRow
 	for _, rec := range records[1:] {
-		if len(rec) < 6 {
+		if len(rec) == 0 {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(rec[0]))
-		if err != nil {
-			return models.ExportJSON{}, fmt.Errorf("时间解析失败（应为 RFC3339，可带小数秒）: %q", rec[0])
+		rt := strings.ToLower(get(rec, "record_type"))
+		if typed && rt != "activity" && rt != "state" {
+			continue // 未知行类型（为将来扩展留出空间）
 		}
-		x, err := strconv.ParseFloat(strings.TrimSpace(rec[3]), 64)
-		if err != nil {
-			return models.ExportJSON{}, fmt.Errorf("x 解析失败: %q", rec[3])
+		if rt == "" {
+			rt = "activity"
 		}
-		z, err := strconv.ParseFloat(strings.TrimSpace(rec[4]), 64)
-		if err != nil {
-			return models.ExportJSON{}, fmt.Errorf("z 解析失败: %q", rec[4])
+		rawTime := get(rec, "time")
+		if rawTime == "" {
+			continue
 		}
-		var yaw *float64
-		if v := strings.TrimSpace(rec[5]); v != "" {
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				yaw = &f
+		t, err := time.Parse(time.RFC3339, rawTime)
+		if err != nil {
+			return models.ExportJSON{}, fmt.Errorf("时间解析失败（应为 RFC3339，可带小数秒）: %q", rawTime)
+		}
+		// 新版文本状态列用 \N 表示 NULL；旧版空字段一律视为空字符串（保持原行为）
+		strOf := func(name string) *string {
+			v := get(rec, name)
+			if typed && v == csvNull {
+				return nil
 			}
+			return &v
 		}
-		rows = append(rows, csvImportRow{
-			t: t, uuid: strings.TrimSpace(rec[1]), name: strings.TrimSpace(rec[2]),
-			x: x, z: z, yaw: yaw,
-			station: strings.TrimSpace(rec[6]), route: strings.TrimSpace(rec[7]),
-		})
+		row := csvImportRow{
+			recType: rt,
+			t:       t,
+			uuid:    get(rec, "player_uuid"),
+			name:    get(rec, "player_name"),
+			yaw:     parseCSVFloatPtr(get(rec, "yaw")),
+			health:  parseCSVFloatPtr(get(rec, "health")),
+			armor:   parseCSVIntPtr(get(rec, "armor")),
+			station: strOf("station_id"),
+			route:   strOf("route_id"),
+			rs1:     strOf("route_station_id1"),
+			rs2:     strOf("route_station_id2"),
+		}
+		if rt == "state" {
+			rows = append(rows, row)
+			continue
+		}
+		// 位置行必须有坐标
+		x, err := strconv.ParseFloat(get(rec, "x"), 64)
+		if err != nil {
+			return models.ExportJSON{}, fmt.Errorf("x 解析失败: %q", get(rec, "x"))
+		}
+		z, err := strconv.ParseFloat(get(rec, "z"), 64)
+		if err != nil {
+			return models.ExportJSON{}, fmt.Errorf("z 解析失败: %q", get(rec, "z"))
+		}
+		row.x, row.z = x, z
+		rows = append(rows, row)
 	}
 	if len(rows) == 0 {
 		return models.ExportJSON{}, fmt.Errorf("CSV 无数据行")
 	}
 
-	// 全局按时间排序（稳定），用于推导起止时间与轮询间隔
+	// 全局按时间排序（稳定）：activity 与 state 各自保持时间升序
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].t.Before(rows[j].t) })
 
-	// 按玩家分组（保持出现顺序），状态去重
+	// 按玩家分组（保持出现顺序）
 	order := []string{}
 	players := map[string]*models.ExportPlayer{}
 	lastState := map[string]string{}
@@ -569,54 +870,142 @@ func parseSessionCSV(body []byte, filename string, database *db.DB) (models.Expo
 		if p.Name == "" {
 			p.Name = r.name
 		}
-		p.Activity = append(p.Activity, models.ActivityPoint{Time: r.t, X: r.x, Z: r.z, Yaw: r.yaw})
-		key := r.station + "\x00" + r.route
-		if key != lastState[r.uuid] {
-			lastState[r.uuid] = key
-			station, route := r.station, r.route
+		if r.recType == "state" {
+			// 新格式：状态记录带独立采集时间，原样保留
 			p.State = append(p.State, models.StateRecord{
-				Time: r.t, StationID: &station, RouteID: &route,
+				Time:            r.t,
+				StationID:       r.station,
+				RouteID:         r.route,
+				RouteStationID1: r.rs1,
+				RouteStationID2: r.rs2,
+				Health:          r.health,
+				Armor:           r.armor,
 			})
+			continue
+		}
+		p.Activity = append(p.Activity, models.ActivityPoint{Time: r.t, X: r.x, Z: r.z, Yaw: r.yaw})
+		if !typed {
+			// 旧版宽表没有独立状态段：按「状态变化才记录」从位置行重建
+			key := csvStrVal(r.station) + "\x00" + csvStrVal(r.route)
+			if key != lastState[r.uuid] {
+				lastState[r.uuid] = key
+				p.State = append(p.State, models.StateRecord{
+					Time: r.t, StationID: r.station, RouteID: r.route,
+				})
+			}
 		}
 	}
 	if len(order) == 0 {
 		return models.ExportJSON{}, fmt.Errorf("CSV 中没有有效的玩家数据（player_uuid 为空）")
 	}
 
-	// 会话元数据推导
+	// 会话元数据：新版用文件头注释还原，旧版由数据推导
 	cfgMap := loadConfigMap(database)
-	tileZoom := 3
-	if v := strings.TrimSpace(cfgMap["default_tile_zoom"]); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			tileZoom = n
-		}
-	}
-	sess := models.Session{
-		Name:            importSessionName(filename),
-		StartedAt:       rows[0].t,
-		StoppedAt:       &rows[len(rows)-1].t,
-		PollIntervalMs:  medianIntervalMs(rows),
-		MtrURL:          cfgMap["mtr_url"],
-		SquaremapURL:    cfgMap["squaremap_url"],
-		World:           "minecraft_overworld", // 系统默认世界名
-		TileZoom:        tileZoom,
-		TileURLTemplate: "/tiles/{world}/{zoom}/{x}_{z}.png", // 系统默认瓦片模板
-		// CSV 宽表仅含 station_id/route_id 两列：MTR 字段启用，
-		// 线路起止站/health/armor 不在 CSV 中，视为未采集
-		MtrEnabled:           true,
-		CollectStationID:     true,
-		CollectRouteID:       true,
-		CollectRouteStation1: false,
-		CollectRouteStation2: false,
-		CollectHealth:        false,
-		CollectArmor:         false,
-	}
+	sess := deriveSessionCSV(filename, rows, cfgMap)
+	applyCSVMeta(&sess, meta)
 
 	exportPlayers := make([]models.ExportPlayer, 0, len(order))
 	for _, uuid := range order {
 		exportPlayers = append(exportPlayers, *players[uuid])
 	}
 	return models.ExportJSON{Version: 1, Session: sess, Players: exportPlayers}, nil
+}
+
+// deriveSessionCSV 由数据推导会话元数据（旧版宽表无元数据时的兜底）
+func deriveSessionCSV(filename string, rows []csvImportRow, cfgMap map[string]string) models.Session {
+	tileZoom := 3
+	if v := strings.TrimSpace(cfgMap["default_tile_zoom"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			tileZoom = n
+		}
+	}
+	// 起止时间与轮询间隔只看位置行（状态行时间更密，会拉低中位数）
+	act := make([]csvImportRow, 0, len(rows))
+	for _, r := range rows {
+		if r.recType != "state" {
+			act = append(act, r)
+		}
+	}
+	if len(act) == 0 {
+		act = rows
+	}
+	return models.Session{
+		Name:             importSessionName(filename),
+		StartedAt:        act[0].t,
+		StoppedAt:        &act[len(act)-1].t,
+		PollIntervalMs:   medianIntervalMs(act),
+		MtrURL:           cfgMap["mtr_url"],
+		SquaremapURL:     cfgMap["squaremap_url"],
+		World:            "minecraft_overworld", // 系统默认世界名
+		TileZoom:         tileZoom,
+		TileURLTemplate:  "/tiles/{world}/{zoom}/{x}_{z}.png", // 系统默认瓦片模板
+		MtrEnabled:       true,
+		CollectStationID: true,
+		CollectRouteID:   true,
+	}
+}
+
+// applyCSVMeta 用文件头注释还原会话元数据（解析失败的字段保留推导值）
+func applyCSVMeta(s *models.Session, meta map[string]string) {
+	if len(meta) == 0 {
+		return
+	}
+	if v, ok := meta["name"]; ok && strings.TrimSpace(v) != "" {
+		s.Name = v
+	}
+	if v, ok := meta["started_at"]; ok {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			s.StartedAt = t.UTC()
+		}
+	}
+	if v, ok := meta["stopped_at"]; ok && v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			u := t.UTC()
+			s.StoppedAt = &u
+		}
+	}
+	if v, ok := meta["max_duration_sec"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.MaxDurationSec = &n
+		}
+	}
+	if v, ok := meta["stopped_reason"]; ok && v != "" {
+		s.StoppedReason = &v
+	}
+	if v, ok := meta["poll_interval_ms"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			s.PollIntervalMs = n
+		}
+	}
+	if v, ok := meta["mtr_url"]; ok {
+		s.MtrURL = v
+	}
+	if v, ok := meta["squaremap_url"]; ok {
+		s.SquaremapURL = v
+	}
+	if v, ok := meta["world"]; ok && v != "" {
+		s.World = v
+	}
+	if v, ok := meta["tile_zoom"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			s.TileZoom = n
+		}
+	}
+	if v, ok := meta["tile_url_template"]; ok && v != "" {
+		s.TileURLTemplate = v
+	}
+	boolFlag := func(key string, dst *bool) {
+		if v, ok := meta[key]; ok {
+			*dst = v == "1" || strings.EqualFold(v, "true")
+		}
+	}
+	boolFlag("mtr_enabled", &s.MtrEnabled)
+	boolFlag("collect_station_id", &s.CollectStationID)
+	boolFlag("collect_route_id", &s.CollectRouteID)
+	boolFlag("collect_route_station1", &s.CollectRouteStation1)
+	boolFlag("collect_route_station2", &s.CollectRouteStation2)
+	boolFlag("collect_health", &s.CollectHealth)
+	boolFlag("collect_armor", &s.CollectArmor)
 }
 
 // importSessionName 由上传文件名生成会话名（去目录与扩展名，过滤非法字符）

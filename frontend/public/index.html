@@ -180,7 +180,7 @@
       <div class="form-row">
         <input type="file" id="session-import-file" accept=".json,.csv" style="max-width: 320px;">
         <button onclick="consolePage.importSession()">导入单次会话（JSON/CSV）</button>
-        <span class="hint">导入一次会话数据（不清空现有数据）；JSON 为「导出会话 JSON」，CSV 为「导出会话 CSV」的宽表格式（time,player_uuid,player_name,x,z,yaw,station_id,route_id）</span>
+        <span class="hint">导入一次会话数据（不清空现有数据）；JSON 为「导出会话 JSON」，CSV 为「导出会话 CSV」（表头前注释行含会话元数据，activity/state 两类数据行，导入结果与 JSON 等效）；也兼容旧版 8 列宽表 CSV</span>
       </div>
       <div class="form-row">
         <button class="danger" onclick="consolePage.wipeDatabase()">一键清空数据库</button>
