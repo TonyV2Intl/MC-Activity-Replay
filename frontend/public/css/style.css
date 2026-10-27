@@ -494,8 +494,8 @@ table.data tr.clickable { cursor: pointer; }
 
 /* ---------- 回放页：地图下方播放控制条 ---------- */
 /* 位于 #map-container 之外（绝对定位于 #map-area 底部居中）：
-   录制裁剪到地图区域时不会进入画面；录制模式下整体隐藏保持画面干净。
-   进度条轨道自绘，原生 range 透明覆盖在其上负责拖动与键盘交互。 */
+   录制裁剪到地图区域时不会进入画面。进度条轨道自绘，
+   原生 range 透明覆盖在其上负责拖动与键盘交互。 */
 #playback-bar {
   position: absolute;
   left: 50%;
@@ -514,7 +514,6 @@ table.data tr.clickable { cursor: pointer; }
   backdrop-filter: blur(6px);
   transition: opacity 0.15s;
 }
-body.recording-mode #playback-bar { opacity: 0; pointer-events: none; }
 
 .pb-btn {
   flex: none;
@@ -766,7 +765,10 @@ body.recording-mode #playback-bar { opacity: 0; pointer-events: none; }
   margin-top: 16px;
 }
 
-/* ---------- 录制模式：保留侧边栏，隐藏 Leaflet 控件，地图按比例居中 ---------- */
+/* ---------- 录制模式：保留侧边栏与播放控制条，隐藏 Leaflet 控件，地图按比例居中 ----------
+   播放控制条位于 #map-container 之外：RestrictionTarget 裁剪录制时天然不进画面，
+   故录制模式下保持可见可操作；仅「降级录制整个标签页/屏幕」时控制条会入画
+   （状态提示已说明需后期手动裁剪）。 */
 body.recording-mode #map-container {
   width: 100%;
   max-width: 100%;
