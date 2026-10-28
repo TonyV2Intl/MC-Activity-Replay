@@ -251,6 +251,15 @@ table.data tr.clickable { cursor: pointer; }
 .check-group .hint { flex-basis: 100%; }
 /* 复选框组内的窄数字输入框（最多显示轨迹点数量，避免继承 width:100%） */
 .check-group input[type="number"] { width: 84px; flex: none; padding: 4px 8px; }
+/* 更窄的数值输入框（描边宽度/圆角、高亮断档阈值），一行内可并排放置 */
+.check-group input[type="number"].num-sm { width: 62px; }
+/* 「标签 + 输入框 + 单位」组合：整体换行，避免标签与输入框被 flex-wrap 拆到两行 */
+.check-group .num-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
 .check-group input[type="number"]:disabled { opacity: 0.45; cursor: not-allowed; }
 .panel-head { display: flex; align-items: center; gap: 10px; }
 .panel-head h2 { margin: 0; }

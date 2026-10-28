@@ -32,6 +32,16 @@
           <label><input type="checkbox" id="check-fixed-avatar-rotation"> <span>固定朝向</span></label>
           <label><input type="checkbox" id="check-avatar-outline"> <span>玩家色描边</span></label>
           <span class="hint">固定朝向：头像始终朝上，不按 yaw 值旋转；玩家色描边：用该玩家轨迹颜色给头像描边</span>
+          <span class="num-field" title="描边宽度（px，1–20），仅「玩家色描边」开启时生效">
+            <span>宽度</span>
+            <input type="number" id="input-outline-width" class="num-sm" min="1" max="20" step="1" value="5">
+            <span>px</span>
+          </span>
+          <span class="num-field" title="描边与头像的圆角（px，0–50，0=直角），仅「玩家色描边」开启时生效">
+            <span>圆角</span>
+            <input type="number" id="input-outline-radius" class="num-sm" min="0" max="50" step="1" value="4">
+            <span>px</span>
+          </span>
         </div>
         <div class="speed-mode" title="根据前后坐标点推算移动速度，显示在 tooltip 中">
           <span>速度推算：</span>
@@ -91,6 +101,15 @@
         <div class="hint">
           进度条与播放按钮位于地图下方；空格播放/暂停、←/→ 单点步进。
           选中玩家后进度条会高亮其数据覆盖的时间段。
+        </div>
+        <div class="check-group" title="选中玩家时，进度条以其轨迹色高亮数据覆盖的时间段；相邻两个数据点的间隔达到该值（秒）即视为数据断档，高亮在此断开留空">
+          <span>选中高亮：</span>
+          <span class="num-field" title="相邻数据点间隔达到该秒数即断开高亮（1–3600，默认 30 秒）">
+            <span>断档阈值</span>
+            <input type="number" id="input-gap-break" class="num-sm" min="1" max="3600" step="1" value="30">
+            <span>秒</span>
+          </span>
+          <span class="hint">相邻数据点间隔达到该秒数即断开高亮（默认 30 秒），偏好记忆在浏览器本地</span>
         </div>
       </div>
 

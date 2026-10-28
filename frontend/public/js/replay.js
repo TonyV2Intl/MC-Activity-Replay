@@ -55,10 +55,19 @@ const MIN_MAX_POINTS = 10;
 // 录制模式地图区域高度（px）：0=自适应（横向顶满）；宽度 = 高度 × 画面比例
 const MIN_RECORD_HEIGHT = 200;
 
-// 选中玩家进度条高亮：相邻数据点时间差 ≥ 该倍数 × 会话轮询间隔即视为「数据断档」，
-// 高亮在此处断开（默认 1s 轮询 → 间隔 5s 及以上断开），避免把长时间无数据的空档标成连续覆盖
-const SELECT_BREAK_GAP_FACTOR = 5;
-const DEFAULT_POLL_INTERVAL_MS = 1000;
+// 选中玩家进度条高亮：相邻数据点时间差达到该秒数即视为「数据断档」，高亮在此处断开。
+// 侧栏「播放控制」可调，localStorage 持久化
+const DEFAULT_GAP_BREAK_SEC = 30;
+const MIN_GAP_BREAK_SEC = 1;
+const MAX_GAP_BREAK_SEC = 3600;
+
+// 头像描边样式：宽度与圆角（px），侧栏「地图头像」可调，localStorage 持久化
+const DEFAULT_OUTLINE_WIDTH = 5;
+const MIN_OUTLINE_WIDTH = 1;
+const MAX_OUTLINE_WIDTH = 20;
+const DEFAULT_OUTLINE_RADIUS = 4;
+const MIN_OUTLINE_RADIUS = 0;
+const MAX_OUTLINE_RADIUS = 50;
 
 const replayPage = {
   /* ---------- 状态 ---------- */
@@ -101,6 +110,9 @@ const replayPage = {
   hideJump: false,          // 是否完全不绘制跳跃段（与虚线共用阈值，默认关；localStorage 持久化）
   fixedAvatarRotation: false, // 地图头像是否固定朝向（不按 yaw 旋转；默认关）
   avatarOutline: false,     // 是否用玩家色给地图头像描边（默认关）
+  avatarOutlineWidth: DEFAULT_OUTLINE_WIDTH,   // 描边宽度（px，默认 5，可调）
+  avatarOutlineRadius: DEFAULT_OUTLINE_RADIUS, // 描边圆角（px，默认 4，可调）
+  gapBreakSec: DEFAULT_GAP_BREAK_SEC,          // 进度条高亮断档阈值（秒，默认 30，可调）
   arrowMode: 'all',         // 方向箭头显示模式：all=一直显示（默认）| notPassed=仅未走过 | none=一直隐藏
   hideNotPassed: false,     // 隐藏未走过的路线（localStorage 持久化，默认关）
   unlimitedZoom: false,     // 是否取消地图最小/最大缩放等级限制（localStorage 持久化，默认关）
@@ -138,6 +150,15 @@ const replayPage = {
       this.hideJump = localStorage.getItem('mc-replay.hideJump') === '1';
       this.fixedAvatarRotation = localStorage.getItem('mc-replay.fixedAvatarRotation') === '1';
       this.avatarOutline = localStorage.getItem('mc-replay.avatarOutline') === '1';
+      const savedOutlineW = parseInt(localStorage.getItem('mc-replay.outlineWidth') || '', 10);
+      this.avatarOutlineWidth = (savedOutlineW >= MIN_OUTLINE_WIDTH)
+        ? Math.min(savedOutlineW, MAX_OUTLINE_WIDTH) : DEFAULT_OUTLINE_WIDTH;
+      const savedOutlineR = parseInt(localStorage.getItem('mc-replay.outlineRadius') || '', 10);
+      this.avatarOutlineRadius = (savedOutlineR >= MIN_OUTLINE_RADIUS)
+        ? Math.min(savedOutlineR, MAX_OUTLINE_RADIUS) : DEFAULT_OUTLINE_RADIUS;
+      const savedGapBreak = parseInt(localStorage.getItem('mc-replay.gapBreakSec') || '', 10);
+      this.gapBreakSec = (savedGapBreak >= MIN_GAP_BREAK_SEC)
+        ? Math.min(savedGapBreak, MAX_GAP_BREAK_SEC) : DEFAULT_GAP_BREAK_SEC;
       const savedRecordHeight = parseInt(localStorage.getItem('mc-replay.recordHeight') || '', 10);
       this.recordHeight = (savedRecordHeight >= MIN_RECORD_HEIGHT) ? savedRecordHeight : 0;
       const savedArrowMode = localStorage.getItem('mc-replay.arrowMode');
@@ -428,6 +449,26 @@ const replayPage = {
       outlineCb.checked = this.avatarOutline;
       outlineCb.addEventListener('change', () => this.setAvatarOutline(outlineCb.checked));
     }
+    // 描边样式：宽度 / 圆角（px，即时应用到已加载头像）
+    const outlineWidthInput = document.getElementById('input-outline-width');
+    if (outlineWidthInput) {
+      outlineWidthInput.addEventListener('change', () => this.setAvatarOutlineWidth(outlineWidthInput.value));
+      outlineWidthInput.addEventListener('blur', () => this.syncAvatarOutlineInputs());
+    }
+    const outlineRadiusInput = document.getElementById('input-outline-radius');
+    if (outlineRadiusInput) {
+      outlineRadiusInput.addEventListener('change', () => this.setAvatarOutlineRadius(outlineRadiusInput.value));
+      outlineRadiusInput.addEventListener('blur', () => this.syncAvatarOutlineInputs());
+    }
+    this.syncAvatarOutlineInputs();
+
+    // 选中玩家进度条高亮：数据断档阈值（秒，改后立即重绘高亮分段）
+    const gapBreakInput = document.getElementById('input-gap-break');
+    if (gapBreakInput) {
+      gapBreakInput.addEventListener('change', () => this.setGapBreakSec(gapBreakInput.value));
+      gapBreakInput.addEventListener('blur', () => this.syncGapBreakInput());
+    }
+    this.syncGapBreakInput();
 
     // 方向箭头显示模式（偏好持久化到 localStorage，切换后重绘即时生效）
     const arrowRadios = document.querySelectorAll('input[name="arrow-mode"]');
@@ -1506,10 +1547,9 @@ const replayPage = {
   },
 
   /**
-   * 头像描边：给标记元素加纯色圆角描边——box-shadow 零偏移/零模糊/5px 扩散，
+   * 头像描边：给标记元素加纯色圆角描边——box-shadow 零偏移/零模糊/指定像素扩散，
    * 是一圈边缘锐利的实色框（不是沿透明通道的渐变光晕），颜色取该玩家当前
-   * 轨迹色；同时给元素 4px 圆角，头像与描边一起变成小圆角矩形（box-shadow
-   * 会跟随 border-radius）。随头像一起旋转，关闭时清空内联样式。
+   * 轨迹色；圆角随之可调（box-shadow 跟随 border-radius），关闭时清空内联样式。
    */
   applyAvatarOutline(track) {
     const marker = track.tp ? track.tp.marker : track.marker;
@@ -1517,8 +1557,71 @@ const replayPage = {
     if (!el) return;
     const c = track.color;
     const on = this.avatarOutline && c;
-    el.style.boxShadow = on ? '0 0 0 5px ' + c : '';
-    el.style.borderRadius = on ? '4px' : '';
+    el.style.boxShadow = on
+      ? '0 0 0 ' + this.avatarOutlineWidth + 'px ' + c : '';
+    el.style.borderRadius = on ? this.avatarOutlineRadius + 'px' : '';
+  },
+
+  /** 设置描边宽度（px，钳制 1–20，留空/非法回默认；localStorage 持久化，即时应用到已加载头像） */
+  setAvatarOutlineWidth(v) {
+    const raw = String(v == null ? '' : v).trim();
+    let n = raw === '' ? DEFAULT_OUTLINE_WIDTH : Math.round(Number(raw));
+    if (!Number.isFinite(n)) n = DEFAULT_OUTLINE_WIDTH;
+    n = Math.min(MAX_OUTLINE_WIDTH, Math.max(MIN_OUTLINE_WIDTH, n));
+    this.avatarOutlineWidth = n;
+    try {
+      localStorage.setItem('mc-replay.outlineWidth', String(n));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.syncAvatarOutlineInputs();
+    for (const track of this.tracks.values()) this.applyAvatarOutline(track);
+  },
+
+  /** 设置描边圆角（px，钳制 0–50，留空/非法回默认；localStorage 持久化，即时应用到已加载头像） */
+  setAvatarOutlineRadius(v) {
+    const raw = String(v == null ? '' : v).trim();
+    let n = raw === '' ? DEFAULT_OUTLINE_RADIUS : Math.round(Number(raw));
+    if (!Number.isFinite(n)) n = DEFAULT_OUTLINE_RADIUS;
+    n = Math.min(MAX_OUTLINE_RADIUS, Math.max(MIN_OUTLINE_RADIUS, n));
+    this.avatarOutlineRadius = n;
+    try {
+      localStorage.setItem('mc-replay.outlineRadius', String(n));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.syncAvatarOutlineInputs();
+    for (const track of this.tracks.values()) this.applyAvatarOutline(track);
+  },
+
+  /** 同步描边宽度/圆角输入框（非聚焦时写值，避免打断输入） */
+  syncAvatarOutlineInputs() {
+    const w = document.getElementById('input-outline-width');
+    if (w && document.activeElement !== w) w.value = this.avatarOutlineWidth;
+    const r = document.getElementById('input-outline-radius');
+    if (r && document.activeElement !== r) r.value = this.avatarOutlineRadius;
+  },
+
+  /**
+   * 设置进度条高亮断档阈值（秒，钳制 1–3600，localStorage 持久化）：
+   * 选中玩家时，相邻数据点间隔达到该值即视为断档、高亮断开。
+   * 只影响高亮分段，清缓存后重绘进度条即可，无需重建轨迹。
+   */
+  setGapBreakSec(v) {
+    const raw = String(v == null ? '' : v).trim();
+    let n = raw === '' ? DEFAULT_GAP_BREAK_SEC : Math.round(Number(raw));
+    if (!Number.isFinite(n)) n = DEFAULT_GAP_BREAK_SEC;
+    n = Math.min(MAX_GAP_BREAK_SEC, Math.max(MIN_GAP_BREAK_SEC, n));
+    this.gapBreakSec = n;
+    try {
+      localStorage.setItem('mc-replay.gapBreakSec', String(n));
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+    this.syncGapBreakInput();
+    this._selSegCache = null;
+    this.renderTimeline();
+  },
+
+  /** 同步断档阈值输入框（非聚焦时写值，避免打断输入） */
+  syncGapBreakInput() {
+    const input = document.getElementById('input-gap-break');
+    if (!input) return;
+    if (document.activeElement !== input) input.value = this.gapBreakSec;
   },
 
   /**
@@ -1981,10 +2084,9 @@ const replayPage = {
 
   /**
    * 选中玩家在进度条上的高亮区间（按数据断档切段）。
-   * 判定：相邻两个数据点时间差 ≥ SELECT_BREAK_GAP_FACTOR × 会话轮询间隔
-   * （poll_interval_ms，缺失时按 1000ms）即视为断档，高亮在此断开；
-   * 每段与当前时间轴 [t0, t1] 取交集，完全在轴外的段丢弃。
-   * 结果按 key（选中玩家/颜色/时间轴/数据点数量与首末时间）缓存。
+   * 判定：相邻两个数据点时间差 ≥ gapBreakSec（秒，默认 30，侧栏可调）即视为
+   * 断档，高亮在此断开；每段与当前时间轴 [t0, t1] 取交集，完全在轴外的段丢弃。
+   * 结果按 key（选中玩家/颜色/时间轴/数据点数量与首末时间/阈值）缓存。
    * @returns {{key: string, color: string, segs: Array<[number, number]>}|null}
    */
   selectionSegments() {
@@ -1992,12 +2094,11 @@ const replayPage = {
     if (!track || !track.times.length) return null;
     const times = track.times;
     const key = this.selectedUuid + '|' + track.color + '|' + this.t0 + '|' + this.t1 +
-      '|' + times.length + '|' + times[0] + '|' + times[times.length - 1];
+      '|' + times.length + '|' + times[0] + '|' + times[times.length - 1] +
+      '|' + this.gapBreakSec;
     if (this._selSegCache && this._selSegCache.key === key) return this._selSegCache;
 
-    const pollMs = Number(this.session && this.session.poll_interval_ms) > 0
-      ? Number(this.session.poll_interval_ms) : DEFAULT_POLL_INTERVAL_MS;
-    const breakGap = pollMs * SELECT_BREAK_GAP_FACTOR;
+    const breakGap = Math.max(1, this.gapBreakSec) * 1000;
 
     const segs = [];
     const pushSeg = (s, e) => {
