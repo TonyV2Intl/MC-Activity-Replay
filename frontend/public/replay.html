@@ -142,6 +142,8 @@
         <button class="pb-btn" id="btn-next" onclick="replayPage.stepNext()" title="下一个点（→）">⏭</button>
         <div class="pb-timeline" id="pb-timeline" title="拖动跳转">
           <div class="pb-track"></div>
+          <!-- 选中玩家高亮层：内部按连续数据区间动态生成多个段，
+               相邻数据点间隔达到 5×轮询间隔处视为断档、高亮断开 -->
           <div class="pb-selected" id="pb-selected" hidden></div>
           <div class="pb-played" id="pb-played"></div>
           <div class="pb-thumb" id="pb-thumb"></div>

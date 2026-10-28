@@ -55,6 +55,11 @@ const MIN_MAX_POINTS = 10;
 // 录制模式地图区域高度（px）：0=自适应（横向顶满）；宽度 = 高度 × 画面比例
 const MIN_RECORD_HEIGHT = 200;
 
+// 选中玩家进度条高亮：相邻数据点时间差 ≥ 该倍数 × 会话轮询间隔即视为「数据断档」，
+// 高亮在此处断开（默认 1s 轮询 → 间隔 5s 及以上断开），避免把长时间无数据的空档标成连续覆盖
+const SELECT_BREAK_GAP_FACTOR = 5;
+const DEFAULT_POLL_INTERVAL_MS = 1000;
+
 const replayPage = {
   /* ---------- 状态 ---------- */
   sessionId: null,
@@ -84,7 +89,8 @@ const replayPage = {
   pointTimes: [],           // 所有已加载轨迹点的去重时间戳（步进用）
 
   followUuid: null,         // 画面中心跟随的玩家 uuid（null = 不跟随）
-  selectedUuid: null,       // 列表中选中的玩家 uuid（null = 未选中）：进度条高亮其数据覆盖时间段
+  selectedUuid: null,       // 列表中选中的玩家 uuid（null = 未选中）：进度条高亮其数据覆盖时间段（断档处断开）
+  _selSegCache: null,       // 进度条选中高亮的分段缓存（key 命中即复用，见 selectionSegments）
   _selectAllToken: 0,       // 全选加载代际：取消全选时自增，用于中止排队中的加载
   tooltipPermanent: false,  // 玩家名字 tooltip 是否常显（false = 仅悬停显示）
   speedMode: '2',           // tooltip 速度推算模式：'2' = 最新两点，'3' = 三点平均
@@ -1928,8 +1934,8 @@ const replayPage = {
   /**
    * 更新地图下方播放控制条的进度显示：
    *   已播放填充 / 拖动手柄 / 选中玩家的数据覆盖时间段高亮。
-   * 轨道为自绘（原生 range 透明覆盖负责交互），高亮区间取选中轨迹的
-   * 首末数据点时间与当前时间轴 [t0, t1] 的交集，颜色用该玩家轨迹色。
+   * 轨道为自绘（原生 range 透明覆盖负责交互）；高亮把选中轨迹按「数据断档」
+   * 切成多个连续段，每段与当前时间轴 [t0, t1] 取交集，颜色用该玩家轨迹色。
    */
   renderTimeline() {
     const span = this.t1 - this.t0;
@@ -1945,24 +1951,74 @@ const replayPage = {
     const bar = document.getElementById('progress-bar');
     if (bar && !this.scrubbing) bar.value = Math.round(ratio * 1000);
 
-    const sel = document.getElementById('pb-selected');
-    if (!sel) return;
+    const layer = document.getElementById('pb-selected');
+    if (!layer) return;
+    if (!span || span <= 0) { layer.hidden = true; return; }
+    const info = this.selectionSegments();
+    if (!info || !info.segs.length) {
+      layer.hidden = true;
+      if (layer.childElementCount) layer.replaceChildren();
+      delete layer.dataset.selKey;
+      return;
+    }
+    layer.hidden = false;
+    // 高亮区间只取决于轨迹/时间轴/颜色，与本帧播放进度无关：命中缓存直接返回，
+    // 避免逐帧重建 DOM 与重写样式（render() 每帧都会调用本方法）
+    if (layer.dataset.selKey === info.key && layer.childElementCount === info.segs.length) return;
+    layer.dataset.selKey = info.key;
+    layer.replaceChildren();
+    for (const seg of info.segs) {
+      const a = seg[0], b = seg[1];
+      const el = document.createElement('div');
+      el.className = 'pb-seg';
+      el.style.left = (((a - this.t0) / span) * 100).toFixed(3) + '%';
+      // 极短区间（如只剩单个数据点的段）也保留最小可见宽度，否则高亮会消失
+      el.style.width = Math.max(0.2, ((b - a) / span) * 100).toFixed(3) + '%';
+      el.style.background = info.color;
+      layer.appendChild(el);
+    }
+  },
+
+  /**
+   * 选中玩家在进度条上的高亮区间（按数据断档切段）。
+   * 判定：相邻两个数据点时间差 ≥ SELECT_BREAK_GAP_FACTOR × 会话轮询间隔
+   * （poll_interval_ms，缺失时按 1000ms）即视为断档，高亮在此断开；
+   * 每段与当前时间轴 [t0, t1] 取交集，完全在轴外的段丢弃。
+   * 结果按 key（选中玩家/颜色/时间轴/数据点数量与首末时间）缓存。
+   * @returns {{key: string, color: string, segs: Array<[number, number]>}|null}
+   */
+  selectionSegments() {
     const track = this.selectedUuid ? this.tracks.get(this.selectedUuid) : null;
-    if (!track || !track.times.length || span <= 0) {
-      sel.hidden = true;
-      return;
+    if (!track || !track.times.length) return null;
+    const times = track.times;
+    const key = this.selectedUuid + '|' + track.color + '|' + this.t0 + '|' + this.t1 +
+      '|' + times.length + '|' + times[0] + '|' + times[times.length - 1];
+    if (this._selSegCache && this._selSegCache.key === key) return this._selSegCache;
+
+    const pollMs = Number(this.session && this.session.poll_interval_ms) > 0
+      ? Number(this.session.poll_interval_ms) : DEFAULT_POLL_INTERVAL_MS;
+    const breakGap = pollMs * SELECT_BREAK_GAP_FACTOR;
+
+    const segs = [];
+    const pushSeg = (s, e) => {
+      const a = Math.max(this.t0, s);   // 裁剪到时间轴，保证高亮落在进度条范围内
+      const b = Math.min(this.t1, e);
+      if (b >= a) segs.push([a, b]);
+    };
+    let start = times[0];
+    let prev = start;
+    for (let i = 1; i < times.length; i++) {
+      const t = times[i];
+      if (t - prev >= breakGap) {  // 断档：当前段收尾于上一个点，下一段从本点开始
+        pushSeg(start, prev);
+        start = t;
+      }
+      prev = t;
     }
-    const a = Math.max(this.t0, track.times[0]);
-    const b = Math.min(this.t1, track.times[track.times.length - 1]);
-    if (b < a) {
-      sel.hidden = true;
-      return;
-    }
-    sel.hidden = false;
-    sel.style.left = (((a - this.t0) / span) * 100).toFixed(3) + '%';
-    // 极短区间也保留最小可见宽度（否则高亮会消失）
-    sel.style.width = Math.max(0.2, ((b - a) / span) * 100).toFixed(3) + '%';
-    sel.style.background = track.color;
+    pushSeg(start, prev);
+
+    this._selSegCache = { key, color: track.color, segs };
+    return this._selSegCache;
   },
 
   /**

@@ -533,7 +533,15 @@ table.data tr.clickable { cursor: pointer; }
   background: #2b303b;
   border-radius: 3px;
 }
+/* 选中玩家高亮：容器铺满轨道，内部按「连续数据区间」动态生成多个 .pb-seg 段；
+   相邻数据点间隔达到 5×轮询间隔处视为断档，高亮断开留空 */
 .pb-selected {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pb-selected[hidden] { display: none; }
+.pb-seg {
   position: absolute;
   top: 50%;
   height: 10px;
@@ -542,7 +550,6 @@ table.data tr.clickable { cursor: pointer; }
   opacity: 0.9;
   /* 比轨道高 4px 并带描边：玩家色恰好与主题青色相近时仍能看清区间边界 */
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.3);
-  pointer-events: none;
 }
 .pb-played {
   position: absolute;
