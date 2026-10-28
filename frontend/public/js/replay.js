@@ -65,7 +65,7 @@ const MAX_GAP_BREAK_SEC = 3600;
 const DEFAULT_OUTLINE_WIDTH = 5;
 const MIN_OUTLINE_WIDTH = 1;
 const MAX_OUTLINE_WIDTH = 20;
-const DEFAULT_OUTLINE_RADIUS = 4;
+const DEFAULT_OUTLINE_RADIUS = 3;
 const MIN_OUTLINE_RADIUS = 0;
 const MAX_OUTLINE_RADIUS = 50;
 
@@ -111,7 +111,7 @@ const replayPage = {
   fixedAvatarRotation: false, // 地图头像是否固定朝向（不按 yaw 旋转；默认关）
   avatarOutline: false,     // 是否用玩家色给地图头像描边（默认关）
   avatarOutlineWidth: DEFAULT_OUTLINE_WIDTH,   // 描边宽度（px，默认 5，可调）
-  avatarOutlineRadius: DEFAULT_OUTLINE_RADIUS, // 描边圆角（px，默认 4，可调）
+  avatarOutlineRadius: DEFAULT_OUTLINE_RADIUS, // 描边圆角（px，默认 3，可调）
   gapBreakSec: DEFAULT_GAP_BREAK_SEC,          // 进度条高亮断档阈值（秒，默认 30，可调）
   arrowMode: 'all',         // 方向箭头显示模式：all=一直显示（默认）| notPassed=仅未走过 | none=一直隐藏
   hideNotPassed: false,     // 隐藏未走过的路线（localStorage 持久化，默认关）
